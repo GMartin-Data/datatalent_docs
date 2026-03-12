@@ -243,6 +243,23 @@
   - **Budget alerts Terraform** : seuils à 50%, 90%, 100% d'un budget de 10€ (`google_billing_budget`)
 - **Argument soutenance :** "Pipeline entièrement free tier. Pas de transformation data lake car volumes insuffisants — on aurait perdu dbt pour économiser zéro euro. Optimisations BQ (partitioning, clustering, SELECT explicite) appliquées pour démontrer la maîtrise, pas par nécessité de coût. Monitoring coûts via billing export + INFORMATION_SCHEMA pour deux niveaux de granularité."
 
+### D27 — Dev local : ADC par développeur (pas de clé JSON partagée)
+
+- **Choix :** Chaque dev s'authentifie avec son propre compte Google via `gcloud auth application-default login`. Le service account `sa-ingestion` est réservé à Cloud Run (Bloc 3).
+- **Justification :** Traçabilité individuelle dans les audit logs, révocation par compte sans impact sur les autres, zéro secret à distribuer. La clé JSON partagée posait des problèmes de sécurité (surface d'attaque × 4), de traçabilité (toutes les actions = `sa-ingestion`) et de rotation (pénible, coordonnée).
+- **Prérequis :** `gcloud` CLI installé sur chaque machine locale + rôles IAM accordés à chaque compte Gmail.
+- **Voir :** `setup-gcp-bloc1-v2.md` (étape 7), `onboarding-gcp-datatalent.md`
+
+### D28 — Stratégie documentation : repo externe → `docs/` IaC-driven
+
+- **Constat :** La documentation vit actuellement dans un repo externe (`datatalent_docs`) pendant les Blocs 1-2. Le livrable final (brief) exige : README, schéma d'architecture, catalogue de données, instructions de déploiement — le tout dans le repo projet.
+- **Stratégie en 3 temps :**
+  1. **Blocs 1-2 :** doc dans `datatalent_docs` (brouillon vivant, itérations libres)
+  2. **Pause 2 :** tri livrable (brief) vs. interne (tutoriels, onboarding, notes de travail)
+  3. **Bloc 3, J4 :** docs finales raffinées copiées dans `docs/` du repo projet
+- **Point clé :** Le `docs/setup-gcp.md` livrable sera réécrit autour de Terraform (`terraform apply`), pas autour des commandes `gcloud` manuelles. Les guides manuels actuels (`setup-gcp-bloc1-v2.md`) deviennent des artefacts historiques. La structure Terraform (modules bien nommés, outputs clairs) conditionne la qualité de cette doc finale.
+- **Ce qui reste dans le repo externe :** tutoriels onboarding, notes d'exploration, guides internes — utiles mais hors périmètre d'évaluation.
+
 ---
 
 ## Mapping des 3 blocs
