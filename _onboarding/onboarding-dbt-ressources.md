@@ -16,6 +16,6 @@ Je pense qu’en débutant les 3-4 premiers suffisent largement (“Jinja” pou
 ---
 ---
 
-# Un repo “template DBT” 
+# Un [**repo**](https://github.com/GMartin-Data/dbt_practise) “template DBT” 
 ça vaut ce que ça vaut, mais ça peut aider pour appréhender la structure (qui est déjà évoquée dans les Notebooks)
 Il n’y a pas forcément consensus sur la gestion du profiles.yml (on en reparlera en temps voulu, mais vous pouvez suivre la procédure indiquée, même si on fait différemment (ou pas) dans le repo du projet.
