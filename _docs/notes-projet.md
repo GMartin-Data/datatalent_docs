@@ -260,6 +260,15 @@
 - **Point clé :** Le `docs/setup-gcp.md` livrable sera réécrit autour de Terraform (`terraform apply`), pas autour des commandes `gcloud` manuelles. Les guides manuels actuels (`setup-gcp-bloc1-v2.md`) deviennent des artefacts historiques. La structure Terraform (modules bien nommés, outputs clairs) conditionne la qualité de cette doc finale.
 - **Ce qui reste dans le repo externe :** tutoriels onboarding, notes d'exploration, guides internes — utiles mais hors périmètre d'évaluation.
 
+### D29 — Variables d'environnement : `.env` racine, `direnv` différé
+
+- **Choix :** Un seul `.env` à la racine du projet, consommé par les 3 composants (ingestion via `os.getenv()`, dbt via `env_var()`, Terraform via `TF_VAR_*`). Format standard sans `export`, compatible `uv run --env-file`, `docker-compose`, et `direnv`.
+- **Justification :** Defense in depth — un seul fichier sensible à protéger. Les fichiers de config (`profiles.yml`, `terraform.tfvars`) deviennent versionnables car ils référencent des variables, pas des valeurs.
+- **Dev local (immédiat) :** depuis `ingestion/`, `uv run --env-file ../.env python -m ...`. Depuis la racine, `set -a && source .env && set +a` avant `dbt` ou `terraform`.
+- **Dev local (ultérieur) :** `direnv` ajouté via un `.envrc` d'une ligne (`dotenv`), zéro breaking change. Charge les variables automatiquement quel que soit le sous-répertoire.
+- **Production (Cloud Run) :** pas de `.env`. Credentials FT via Secret Manager, auth GCP via SA `sa-ingestion`.
+- **Fichiers versionnés :** `.env.example` (template), `profiles.yml` avec `env_var()`. `.env` et `.envrc` dans `.gitignore`.
+
 ---
 
 ## Mapping des 3 blocs
