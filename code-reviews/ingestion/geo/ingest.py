@@ -1,5 +1,12 @@
+"""Ingestion source Géo — snapshots des référentiels géographiques français.
+
+Récupère régions, départements et communes depuis l'API Géo (geo.api.gouv.fr),
+dépose les fichiers JSON dans GCS et charge les tables raw dans BigQuery.
+"""
+
 import json
 import os
+from typing import Any
 
 import httpx
 from shared.bigquery import load_gcs_to_bq
@@ -23,7 +30,19 @@ logger = get_logger(__name__)
     stop=stop_after_attempt(3),
     reraise=True,
 )
-def fetch_geo_data(resource):
+def fetch_geo_data(resource: str) -> list[dict[str, Any]]:
+    """Fetch geographic reference data from the French government API.
+
+    Args:
+        resource: API endpoint name (key of RESOURCES in config.py).
+
+    Returns:
+        List of geographic entities as dictionaries.
+
+    Raises:
+        httpx.HTTPStatusError: on 4xx/5xx after retries exhausted.
+        httpx.TransportError: on network failure after retries exhausted.
+    """
     url = f"{BASE_URL}/{resource}"
     params = {"fields": RESOURCES[resource]}
     logger.info("api_call", url=url, resource=resource)
@@ -32,12 +51,17 @@ def fetch_geo_data(resource):
     return response.json()
 
 
-def run():
+def run() -> None:
+    """Ingest all geographic resources into BigQuery raw layer.
+
+    Fetches regions, départements, and communes from the API Géo,
+    uploads JSON snapshots to GCS, and loads them into BigQuery.
+
+    Raises:
+        RuntimeError: if at least one resource failed ingestion.
+    """
     logger.info("ingestion_start", source="geo", resources=list(RESOURCES.keys()))
 
-    # --- [9] On collecte les erreurs au lieu d'avaler silencieusement.
-    #     Toutes les resources sont tentées, mais run() raise en fin
-    #     si au moins une a échoué → Cloud Run Job sort en erreur.
     errors: list[str] = []
 
     for resource in RESOURCES:
@@ -66,11 +90,8 @@ def run():
             logger.error(
                 "ingestion_error", resource=resource, error=str(e), exc_info=True
             )
-            # --- [9] On enregistre l'échec mais on continue la boucle
-            #     pour tenter les autres resources.
             errors.append(resource)
 
-    # --- [9] Synthèse en fin de run().
     if errors:
         logger.error("ingestion_partial_failure", failed=errors)
         raise RuntimeError(f"Ingestion failed for: {', '.join(errors)}")
