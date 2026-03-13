@@ -89,10 +89,11 @@
 
 ### D11 — Stock Sirene : chargement complet (pas de pré-filtrage)
 
-- **Fichier retenu :** StockEtablissement (Parquet, ~2-3 Go), pas StockUniteLegale
-- **Stratégie :** upload Parquet complet → GCS → BigQuery raw, filtrage en dbt staging
-- **Justification :** conforme au pattern Medallion (raw = brut intégral), simple, idempotent, coût négligeable
-- **Pas de filtrage par codes NAF** dans Sirene : un Data Engineer peut être recruté par n'importe quel secteur (banque, retail, industrie...). Le NAF sert à enrichir, pas à filtrer.
+- **Fichiers retenus :** StockEtablissement (~2-3 Go, ~40M lignes) + StockUniteLegale (~1 Go, ~25M lignes), tous deux en Parquet
+- **Justification des deux fichiers :** StockEtablissement fournit la jointure SIRET avec les offres et la dimension géographique. StockUniteLegale apporte des dimensions BI indisponibles autrement : `categorieEntreprise` (PME/ETI/GE), `categorieJuridiqueUniteLegale`, `trancheEffectifsUniteLegale`, `denominationUniteLegale`. La jointure Etablissement → UniteLegale se fait sur le champ `siren` (présent des deux côtés).
+- **Stratégie :** upload Parquet complet de chaque fichier → GCS → BigQuery raw (deux tables : `raw.sirene_etablissement`, `raw.sirene_unite_legale`), filtrage en dbt staging
+- **Justification raw complet :** conforme au pattern Medallion (raw = brut intégral), simple, idempotent, coût négligeable (free tier)
+- **Pas de filtrage par codes NAF** dans Sirene : un Data Engineer peut être recruté par n'importe quel secteur. Le NAF sert à enrichir, pas à filtrer.
 
 ### D12 — Refresh mensuel Sirene (automatisation Bloc 3)
 
@@ -384,8 +385,8 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 
 ### Stock Sirene
 
-- StockEtablissement Parquet : ~40M lignes brut, ~15M actifs, ~2-3 Go
-- Chargement complet dans BigQuery raw (D11), filtrage `etatAdministratifEtablissement = 'A'` en staging
+- StockEtablissement Parquet (~40M lignes, ~2-3 Go) + StockUniteLegale (~25M lignes, ~1 Go)
+- Chargement complet des deux fichiers dans BigQuery raw (D11), filtrage `etatAdministratifEtablissement = 'A'` en staging, jointure SIREN entre les deux en intermediate
 - Pas de filtrage NAF dans Sirene — enrichissement seulement
 - RGPD : `statutDiffusionEtablissement = 'P'` → adresse masquée, à gérer en staging
 - Refresh mensuel automatisé prévu pour Bloc 3 (D12)

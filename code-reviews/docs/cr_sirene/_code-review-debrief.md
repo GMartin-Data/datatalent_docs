@@ -11,7 +11,7 @@
 
 Le code est bien écrit en isolation — bonne décomposition en fonctions unitaires, défenses robustes (fichier vide, téléchargement incomplet, format inattendu), tests structurés. Le problème n'est pas la qualité du code, c'est l'alignement avec l'architecture du projet.
 
-Trois écarts bloquants empêchent le merge.
+Un écart bloquant empêche le merge.
 
 ---
 
@@ -19,24 +19,22 @@ Trois écarts bloquants empêchent le merge.
 
 ### 1. Aucun appel à `shared/` — les données ne quittent jamais le disque local
 
-Le contrat d'interface exige que chaque source appelle `upload_to_gcs()` puis `load_gcs_to_bq()`. Le code actuel télécharge le Parquet, le transforme localement, et retourne des chemins de fichiers. La table `raw.sirene` dans BigQuery ne sera jamais alimentée.
+Le contrat d'interface exige que chaque source appelle `upload_to_gcs()` puis `load_gcs_to_bq()`. Le code actuel télécharge le Parquet et retourne des chemins de fichiers locaux. Les tables `raw.sirene_etablissement` et `raw.sirene_unite_legale` dans BigQuery ne seront jamais alimentées.
 
-**Flux attendu :** download → `upload_to_gcs(local_path, "sirene")` → `load_gcs_to_bq(gcs_uri, "raw", "sirene")`
-**Flux actuel :** download → `data/raw/` → sélection colonnes → `data/prepared/` → return paths
+**Flux attendu :** download → `upload_to_gcs(local_path, "sirene")` → `load_gcs_to_bq(gcs_uri, "raw", "{table}")`
+**Flux actuel :** download → `data/raw/` → return paths
 
-### 2. Sélection de colonnes en raw — viole D11
+---
 
-La décision D11 est explicite : chargement complet, pas de sélection de colonnes. Le component doc précise : "Règle raw : chargement du Parquet complet tel quel."
+## ✅ Résolu en amont
 
-`transform_parquet_keep_columns()` sélectionne ~28 colonnes sur ~100+. Cette logique appartient à dbt staging (Bloc 2). Toute la mécanique `PREPARED_DIR` / `_light.parquet` / `RESOURCE_SELECTED_COLUMNS` doit être retirée.
+### ~~2. Sélection de colonnes en raw — viole D11~~
 
-> **Note :** le travail d'identification des colonnes utiles n'est pas perdu — c'est l'input du futur modèle `stg_sirene`. Voir l'ADR dédié (`adr-raw-complet-vs-filtrage-sirene.md`).
+La logique de sélection de colonnes (`PREPARED_DIR`, `RESOURCE_SELECTED_COLUMNS`, `transform_parquet_keep_columns`, etc.) a été supprimée. Le raw reçoit désormais le Parquet complet tel quel, conforme à D11. Le travail d'identification des colonnes utiles est conservé comme input pour dbt staging (Bloc 2). Voir ADR (`adr-raw-complet-vs-filtrage-sirene.md`).
 
-### 3. StockUniteLegale inclus — hors périmètre sans validation
+### ~~3. StockUniteLegale inclus — hors périmètre~~
 
-Le component doc retient uniquement StockEtablissement. Justification : le SIRET identifie un établissement, et les offres France Travail référencent le SIRET de l'établissement qui recrute.
-
-`config.py` déclare deux ressources (`unite_legale` + `etablissement`) et `run()` itère sur les deux. L'ajout est peut-être pertinent, mais c'est une décision d'architecture — à trancher en équipe, pas à introduire silencieusement dans une PR.
+L'inclusion de StockUniteLegale a été validée en équipe. D11 est mis à jour : les deux fichiers (StockEtablissement + StockUniteLegale) sont dans le scope. Le collègue avait raison de les inclure — `categorieEntreprise`, `categorieJuridiqueUniteLegale` et `trancheEffectifsUniteLegale` apportent des dimensions BI indisponibles autrement. Documents projet alignés.
 
 ---
 
@@ -74,8 +72,10 @@ Le check dans `download_file()` vérifie l'URL finale et le content-type. Si dat
 - **Décomposition** — fonctions unitaires testables, séparation config/logique, dataclass `ResourceInfo`
 - **Type hints** — présents partout, `from __future__ import annotations`, nommage snake_case
 - **Sécurité** — aucune credential en dur (data.gouv est public, pas de clé GCP)
-- **Défenses non-réseau** — fichier vide après download, téléchargement incomplet (content-length), aucune colonne trouvée, format inattendu
+- **Défenses non-réseau** — fichier vide après download, téléchargement incomplet (content-length), format inattendu
 - **Tests** — happy path + edge cases couverts, monkeypatch correct sur `run()`, bonne utilisation de `tmp_path`
+- **Inclusion StockUniteLegale** — bonne initiative, validée par l'équipe (voir point 3)
+- **Raw complet** — sélection de colonnes supprimée, conforme à D11 (voir point 2)
 
 ---
 
@@ -83,4 +83,4 @@ Le check dans `download_file()` vérifie l'URL finale et le content-type. Si dat
 
 **Corrections nécessaires avant merge.**
 
-La base est saine. Le collègue a produit du code robuste et bien testé. Les problèmes sont des écarts d'alignement avec l'architecture, pas des défauts de compétence. La roadmap de résolution est dans `roadmap-review-sirene.md`.
+La base est saine. Le collègue a produit du code robuste et bien testé — et avait raison d'inclure StockUniteLegale. Le bloquant restant est l'absence d'appel à `shared/` (GCS + BQ). La roadmap de résolution est dans `roadmap-review-sirene.md`.

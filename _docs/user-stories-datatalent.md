@@ -82,10 +82,10 @@ Note : T1.1 à T1.3 se font naturellement en explorant sa source. Les vraies tâ
 **Assigné à :** Collègue 2 (J1 après-midi → J4)
 
 #### Tâches
-- [ ] **T3.1** Localiser les fichiers Parquet sur data.gouv.fr (StockEtablissement — pas StockUniteLegale, voir D11) — *0.25j*
-- [ ] **T3.2** Explorer le schéma Parquet localement (pyarrow/pandas) : colonnes, types, volume — *0.5j*
-- [ ] **T3.3** Implémenter le script : téléchargement Parquet complet → upload GCS via `shared/gcs.py` (pas de filtrage NAF — D11, chargement brut intégral) — *0.5j*
-- [ ] **T3.4** Charger de GCS vers BigQuery raw via `shared/bigquery.py` — *0.5j*
+- [ ] **T3.1** Localiser les fichiers Parquet sur data.gouv.fr (StockEtablissement + StockUniteLegale, voir D11) — *0.25j*
+- [ ] **T3.2** Explorer le schéma Parquet localement (pyarrow/pandas) : colonnes, types, volume des deux fichiers — *0.5j*
+- [ ] **T3.3** Implémenter le script : téléchargement des deux Parquet complets → upload GCS via `shared/gcs.py` (pas de filtrage NAF — D11, chargement brut intégral) — *0.5j*
+- [ ] **T3.4** Charger de GCS vers BigQuery raw via `shared/bigquery.py` (deux tables : `sirene_etablissement`, `sirene_unite_legale`) — *0.5j*
 - [ ] **T3.5** Ajouter logging structuré (`shared/logging.py`), gestion d'erreurs, idempotence — *0.5j*
 
 Note : aucun filtrage NAF ni par statut dans l'ingestion. Le raw reçoit le stock brut intégral (D11). Le filtrage `etatAdministratifEtablissement = 'A'` et le masquage RGPD se font en dbt staging (Bloc 2).
@@ -93,8 +93,8 @@ Note : aucun filtrage NAF ni par statut dans l'ingestion. Le raw reçoit le stoc
 * * *
 
 > **Definition of Done**
-- [ ] Fichier StockEtablissement Parquet téléchargé depuis data.gouv.fr
-- [ ] Stock complet chargé dans GCS (raw) puis BigQuery (raw dataset) — pas de pré-filtrage
+- [ ] Fichiers StockEtablissement + StockUniteLegale Parquet téléchargés depuis data.gouv.fr
+- [ ] Stock complet des deux fichiers chargé dans GCS (raw) puis BigQuery (deux tables raw) — pas de pré-filtrage
 - [ ] Script idempotent, gestion d'erreurs, logs d'exécution
 
 ---
