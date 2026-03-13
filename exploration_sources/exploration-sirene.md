@@ -1,6 +1,6 @@
 # Exploration des sources de données - Projet DataTalent
 
-**Dernière mise à jour :** 2026-03-12
+**Dernière mise à jour :** 2026-03-13
 
 ---
 
@@ -9,11 +9,16 @@
 Ce document synthétise :
 
 1. L'exploration des fichiers Sirene utilisés dans le projet.
-2. Les choix de colonnes retenues pour la suite du pipeline.
-3. La logique de l'implémentation actuelle du script d'ingestion local.
-4. La distinction entre données **brutes** et données **allégées**.
+2. Les choix d'implémentation retenus pour l'ingestion.
+3. La logique actuelle du script d'ingestion branché sur GCS et BigQuery.
+4. La distinction entre **exploration des données** et **ingestion technique**.
 
-L'objectif est de conserver une base claire avant l'intégration future dans GCP, GCS et BigQuery.
+L'objectif est de conserver une base claire sur :
+
+- les deux sources Sirene retenues ;
+- leur intérêt dans le projet ;
+- le fonctionnement réel du pipeline d'ingestion ;
+- les responsabilités respectives de l'ingestion, du stockage raw et des futures couches de transformation.
 
 ---
 
@@ -26,16 +31,19 @@ Deux ressources sont utilisées :
 - **StockEtablissement**
 - **StockUniteLegale**
 
-Ces deux fichiers sont téléchargés localement chaque mois à partir des ressources officielles data.gouv, puis stockés dans le projet.
+Ces deux fichiers sont récupérés à partir des ressources officielles publiées sur data.gouv.
 
-Le pipeline actuel reste volontairement **local** :
+L'architecture retenue a évolué : l'ingestion n'est plus pensée comme une simple étape locale avec fichier brut puis fichier allégé. Elle est désormais alignée sur le pipeline projet :
 
-- téléchargement du dernier fichier mensuel disponible ;
-- contrôle du format et de la fraîcheur de la ressource ;
-- conservation d'un fichier **raw** complet ;
-- production d'un fichier **prepared** allégé contenant uniquement les colonnes utiles au projet.
+- récupération des métadonnées du dataset ;
+- identification des deux ressources suivies ;
+- téléchargement local technique du fichier Parquet complet ;
+- validation minimale du fichier téléchargé ;
+- upload dans **Google Cloud Storage** ;
+- chargement dans **BigQuery raw**.
 
-À ce stade, il n'y a **pas encore d'envoi vers GCP**.
+Le filtrage de colonnes n'est **plus réalisé dans l'ingestion raw**.
+Cette responsabilité est désormais reportée à la couche de transformation aval, notamment **dbt staging**.
 
 ---
 
@@ -43,26 +51,28 @@ Le pipeline actuel reste volontairement **local** :
 
 ### 2.1 Principe
 
-Le code d'ingestion actuel fait **uniquement** les opérations suivantes :
+Le code d'ingestion actuel fait les opérations suivantes :
 
 1. Interroger les métadonnées du dataset Sirene.
 2. Identifier les deux ressources suivies (`StockEtablissement` et `StockUniteLegale`).
 3. Vérifier que la ressource est bien au format **Parquet**.
-4. Vérifier que la version publiée est suffisamment récente.
-5. Télécharger le fichier brut.
-6. Enregistrer ce fichier dans le dossier `raw/`.
-7. Relire ce fichier et **garder uniquement les colonnes sélectionnées**.
-8. Réécrire un nouveau fichier Parquet allégé dans le dossier `prepared/`.
+4. Télécharger le fichier complet.
+5. Vérifier le fichier téléchargé via son **magic number Parquet** (`PAR1`).
+6. Enregistrer temporairement ce fichier localement.
+7. Uploader ce fichier dans **GCS**.
+8. Charger le fichier GCS dans **BigQuery raw**.
 
 ### 2.2 Ce que le script fait
 
 Le script :
 
 - télécharge la dernière version disponible des deux ressources ;
-- conserve une version brute locale ;
-- produit une version allégée en gardant uniquement les colonnes utiles ;
-- supprime les anciennes versions locales du même type après succès ;
-- conserve le format **Parquet** à chaque étape.
+- conserve le **Parquet complet** ;
+- ne filtre aucune colonne ;
+- utilise **httpx** pour les appels HTTP ;
+- utilise **tenacity** pour les retries sur les appels réseau ;
+- utilise `get_logger(__name__)` pour des logs structurés homogènes ;
+- charge chaque ressource dans une table BigQuery dédiée.
 
 ### 2.3 Ce que le script ne fait pas
 
@@ -73,15 +83,14 @@ Il ne :
 - renomme pas les colonnes ;
 - ne filtre pas les lignes ;
 - ne modifie pas les valeurs ;
-- ne convertit pas les types métiers ;
 - ne nettoie pas les chaînes ;
 - ne calcule pas de nouvelles colonnes ;
-- ne filtre pas encore les établissements actifs uniquement ;
-- ne traite pas encore les règles de staging et marts.
+- ne réduit plus le nombre de colonnes ;
+- ne construit pas encore les tables de staging ou de marts.
 
-Le seul traitement appliqué aux données est donc :
+Autrement dit :
 
-> **la suppression des colonnes non retenues**
+> **L'ingestion raw transporte désormais le fichier complet, sans logique de sélection métier.**
 
 ---
 
@@ -93,73 +102,82 @@ sirene/
 ├── config.py
 ├── ingest.py
 └── data/
-    ├── raw/
-    └── prepared/
+    └── raw/
 
 tests/
 └── test_sirene_ingestion.py
 ```
+
 ### 3.1 Rôle des fichiers
 
 #### `sirene/config.py`
 
 Contient :
 
-- les identifiants des ressources Sirene ;
+- l'identifiant du dataset Sirene ;
 - les paramètres techniques ;
-- la liste des colonnes à conserver pour chaque fichier.
+- les identifiants des deux ressources suivies ;
+- le préfixe de nommage local ;
+- la table BigQuery cible pour chaque ressource.
 
 #### `sirene/ingest.py`
 
 Contient :
 
-- le téléchargement ;
-- la validation des ressources ;
-- l'écriture des fichiers raw ;
-- la création des fichiers prepared allégés.
+- la récupération des métadonnées ;
+- la validation du format ;
+- le téléchargement des fichiers ;
+- la validation Parquet ;
+- l'upload vers GCS ;
+- le chargement dans BigQuery raw ;
+- les logs structurés ;
+- les retries sur les appels réseau.
 
 #### `tests/test_sirene_ingestion.py`
-```
+
 Contient les tests unitaires exécutés avec `pytest` pour vérifier notamment :
 
-- le parsing de date ;
-- le nommage des fichiers raw et prepared ;
+- le parsing des dates ;
+- le nommage des fichiers ;
 - la validation du format attendu ;
-- la validation de la fraîcheur de la ressource ;
-- la sélection effective des colonnes existantes ;
-- le fait qu'un parquet transformé ne contient bien que les colonnes attendues ;
-- l'orchestration de la fonction `run()` sans appel réseau réel.
+- la validation du magic number Parquet ;
+- les erreurs sur les métadonnées incomplètes ;
+- l'orchestration de `process_one_resource()` sans appel réel au réseau, à GCS ou à BigQuery ;
+- l'orchestration de la fonction `run()` sans dépendance externe.
 
-```
+---
 
-## 4. Différence entre raw et prepared
+## 4. Évolution de l'architecture
 
-### 4.1 Raw
+### 4.1 Ancienne logique
 
-Le dossier `raw/` contient les fichiers tels qu'ils sont publiés, sans suppression de colonnes.
+La première version du pipeline fonctionnait selon une logique locale :
 
-Exemples :
+- téléchargement du fichier brut ;
+- stockage dans `raw/` ;
+- sous-sélection de colonnes ;
+- création d'un fichier `prepared/` allégé.
 
-- `StockEtablissement_2026-03.parquet`
-- `StockUniteLegale_2026-03.parquet`
+### 4.2 Nouvelle logique retenue
 
-### 4.2 Prepared
+La logique actuelle est désormais :
 
-Le dossier `prepared/` contient une version allégée, obtenue en gardant uniquement les colonnes utiles au projet.
+- téléchargement du fichier complet ;
+- validation du format Parquet ;
+- upload du fichier vers GCS ;
+- chargement du fichier dans BigQuery raw ;
+- transformations reportées à la couche aval.
 
-Exemples :
+### 4.3 Conséquences
 
-- `StockEtablissement_2026-03_light.parquet`
-- `StockUniteLegale_2026-03_light.parquet`
+Cela implique les changements suivants :
 
-### 4.3 Pourquoi garder les deux
-
-Cette séparation permet de :
-
-- conserver une copie brute traçable ;
-- comparer facilement brut et allégé ;
-- revoir plus tard la sélection de colonnes si nécessaire ;
-- préparer plus proprement l'étape future vers GCP et BigQuery.
+- suppression du dossier `prepared/` ;
+- suppression de la logique de sous-sélection de colonnes ;
+- suppression de la logique locale d'allègement ;
+- conservation des deux sources complètes ;
+- `raw` = copie technique complète de la source ;
+- `staging` = futur endroit du filtrage et de la standardisation.
 
 ---
 
@@ -167,14 +185,13 @@ Cette séparation permet de :
 
 ### 5.1 Accès
 
-- **Source :** fichier Parquet Sirene téléchargé localement
-- **Dossier raw :** `sirene/data/raw`
-- **Dossier prepared :** `sirene/data/prepared`
-- **Fichier brut de référence :** `sirene/data/raw/StockEtablissement_2026-03.parquet`
-- **Fichier allégé de référence :** `sirene/data/prepared/StockEtablissement_2026-03_light.parquet`
+- **Source :** ressource Parquet officielle data.gouv / Insee
+- **Téléchargement local temporaire :** `sirene/data/raw`
 - **Format :** Parquet
-- **Authentification :** aucune
+- **Authentification source :** aucune
 - **Fréquence de mise à jour théorique :** mensuelle
+- **Destination GCS :** préfixe `sirene/`
+- **Destination BigQuery :** `raw.sirene_etablissement`
 
 ### 5.2 Objectif dans le projet
 
@@ -193,57 +210,21 @@ Dans le projet DataTalent, il est utilisé pour :
 L'exploration initiale a été réalisée sur un échantillon limité à 100 000 lignes afin de garder un notebook fluide.
 
 | Indicateur | Valeur |
-|---|---|
+|---|---:|
 | Colonnes disponibles dans le fichier brut | 54 |
-| Colonnes retenues dans la version allégée | 27 |
 | Lignes explorées | 100 000 |
 
-### 5.4 Colonnes retenues dans la version allégée
-
-| Colonne | Usage projet |
-|---|---|
-| siren | Jointure avec StockUniteLegale |
-| nic | Identifiant interne d'établissement |
-| siret | Clé établissement, jointure potentielle avec France Travail |
-| dateCreationEtablissement | Temporalité et ancienneté |
-| trancheEffectifsEtablissement | Taille de structure |
-| anneeEffectifsEtablissement | Contexte de l'effectif |
-| etablissementSiege | Distinction siège et non-siège |
-| numeroVoieEtablissement | Reconstruction d'adresse |
-| typeVoieEtablissement | Reconstruction d'adresse |
-| libelleVoieEtablissement | Reconstruction d'adresse |
-| codePostalEtablissement | Géographie et fallback jointure |
-| libelleCommuneEtablissement | Géographie lisible |
-| codeCommuneEtablissement | Jointure principale API Géo |
-| dateDebut | Temporalité administrative |
-| etatAdministratifEtablissement | Filtre actif et fermé |
-| enseigne1Etablissement | Nom d'usage et matching souple |
-| denominationUsuelleEtablissement | Nom d'usage et matching souple |
-| activitePrincipaleEtablissement | Secteur d'activité |
-| nomenclatureActivitePrincipaleEtablissement | Référentiel activité |
-| caractereEmployeurEtablissement | Filtre employeur |
-| activitePrincipaleNAF25Etablissement | Regroupement activité |
-| statutDiffusionEtablissement | Qualité et diffusion |
-| dateDernierTraitementEtablissement | Fraîcheur technique |
-| nombrePeriodesEtablissement | Complexité historique |
-| identifiantAdresseEtablissement | Normalisation adresse |
-| coordonneeLambertAbscisseEtablissement | Géolocalisation |
-| coordonneeLambertOrdonneeEtablissement | Géolocalisation |
-
-### 5.5 Colonnes volontairement exclues
-
-| Colonne | Motif |
-|---|---|
-| complementAdresseEtablissement | Très peu rempli, faible utilité en V1 |
-| codePaysEtrangerEtablissement | Quasi inutile pour le projet |
-| libellePaysEtrangerEtablissement | Quasi inutile pour le projet |
-
-### 5.6 Interprétation
+### 5.4 Interprétation
 
 - La géographie française est bien couverte grâce à `codeCommuneEtablissement`, `libelleCommuneEtablissement` et `codePostalEtablissement`.
 - Les identifiants `siret` et `siren` sont centraux pour les jointures.
 - Les colonnes de nom d'usage au niveau établissement restent secondaires et servent surtout de fallback.
-- Les coordonnées Lambert sont conservées comme enrichissement cartographique potentiel.
+- Les coordonnées Lambert peuvent servir d'enrichissement cartographique.
+
+### 5.5 Point d'architecture
+
+Même si l'exploration a permis d'identifier les colonnes les plus utiles, elles ne sont plus filtrées au niveau `raw`.
+Le fichier complet est désormais conservé tel quel dans le pipeline d'ingestion.
 
 ---
 
@@ -251,14 +232,13 @@ L'exploration initiale a été réalisée sur un échantillon limité à 100 000
 
 ### 6.1 Accès
 
-- **Source :** fichier Parquet Sirene téléchargé localement
-- **Dossier raw :** `sirene/data/raw`
-- **Dossier prepared :** `sirene/data/prepared`
-- **Fichier brut de référence :** `sirene/data/raw/StockUniteLegale_2026-03.parquet`
-- **Fichier allégé de référence :** `sirene/data/prepared/StockUniteLegale_2026-03_light.parquet`
+- **Source :** ressource Parquet officielle data.gouv / Insee
+- **Téléchargement local temporaire :** `sirene/data/raw`
 - **Format :** Parquet
-- **Authentification :** aucune
+- **Authentification source :** aucune
 - **Fréquence de mise à jour théorique :** mensuelle
+- **Destination GCS :** préfixe `sirene/`
+- **Destination BigQuery :** `raw.sirene_unite_legale`
 
 ### 6.2 Objectif dans le projet
 
@@ -277,51 +257,19 @@ Dans le projet DataTalent, il sert à :
 L'exploration initiale a également été réalisée sur un échantillon de 100 000 lignes.
 
 | Indicateur | Valeur |
-|---|---|
+|---|---:|
 | Colonnes disponibles dans le fichier brut | 35 |
-| Colonnes retenues dans la version allégée | 22 |
 | Lignes explorées | 100 000 |
 
-### 6.4 Colonnes retenues dans la version allégée
+### 6.4 Interprétation
 
-| Colonne | Usage projet |
-|---|---|
-| siren | Jointure avec StockEtablissement |
-| dateCreationUniteLegale | Temporalité |
-| trancheEffectifsUniteLegale | Taille d'entreprise |
-| anneeEffectifsUniteLegale | Contexte effectifs |
-| categorieEntreprise | Segmentation entreprise |
-| anneeCategorieEntreprise | Contexte catégorie |
-| dateDebut | Temporalité administrative |
-| etatAdministratifUniteLegale | Filtre actif et cessé |
-| nomUniteLegale | Nom de personne et structure |
-| nomUsageUniteLegale | Nom d'usage |
-| denominationUniteLegale | Nom principal recommandé |
-| denominationUsuelle1UniteLegale | Nom d'usage complémentaire |
-| sigleUniteLegale | Abréviation |
-| categorieJuridiqueUniteLegale | Type de structure |
-| activitePrincipaleUniteLegale | Secteur d'activité |
-| nomenclatureActivitePrincipaleUniteLegale | Référentiel activité |
-| nicSiegeUniteLegale | Référence siège |
-| activitePrincipaleNAF25UniteLegale | Regroupement activité |
-| statutDiffusionUniteLegale | Qualité et diffusion |
-| dateDernierTraitementUniteLegale | Fraîcheur technique |
-| nombrePeriodesUniteLegale | Complexité historique |
-| economieSocialeSolidaireUniteLegale | Enrichissement analytique |
+- `denominationUniteLegale` reste un très bon candidat pour représenter le nom de l'entreprise dans les couches aval.
+- Les autres colonnes de nom restent utiles comme fallback.
+- `categorieEntreprise` et `categorieJuridiqueUniteLegale` restent intéressantes pour les analyses futures.
 
-### 6.5 Colonnes volontairement exclues
+### 6.5 Point d'architecture
 
-| Colonne | Motif |
-|---|---|
-| caractereEmployeurUniteLegale | Inexploitable dans l'exploration |
-| societeMissionUniteLegale | Quasi inutile pour la V1 |
-| identifiantAssociationUniteLegale | Quasi inutile pour la V1 |
-
-### 6.6 Interprétation
-
-- `denominationUniteLegale` reste le meilleur candidat pour représenter le nom de l'entreprise dans le pipeline.
-- Les autres colonnes de nom sont conservées comme fallback, pas comme source principale.
-- `categorieEntreprise` et `categorieJuridiqueUniteLegale` restent utiles pour les analyses futures.
+Comme pour `StockEtablissement`, l'exploration a servi à comprendre la structure du fichier, mais aucune sous-sélection de colonnes n'est plus appliquée pendant l'ingestion `raw`.
 
 ---
 
@@ -358,6 +306,18 @@ Les constats majeurs issus de l'exploration sont les suivants.
 | Activité entreprise | `activitePrincipaleUniteLegale` |
 | Activité établissement | `activitePrincipaleEtablissement` |
 
+### 7.4 Rôle actuel de ces constats
+
+Ces constats restent utiles pour les futures couches :
+
+- staging ;
+- modélisation ;
+- jointures ;
+- enrichissements ;
+- marts.
+
+Ils n'ont simplement plus vocation à piloter une réduction de colonnes dans le `raw`.
+
 ---
 
 ## 8. Recommandations de pipeline
@@ -366,8 +326,10 @@ Les constats majeurs issus de l'exploration sont les suivants.
 
 La couche actuelle produit :
 
-- un raw complet ;
-- un prepared allégé par sous-sélection de colonnes.
+- un téléchargement du Parquet complet ;
+- une validation technique minimale ;
+- un upload vers GCS ;
+- un chargement dans BigQuery raw.
 
 ### 8.2 Ce que la couche actuelle ne fait pas encore
 
@@ -375,31 +337,57 @@ Les traitements suivants restent pour une étape ultérieure :
 
 - filtrer uniquement les établissements actifs ;
 - filtrer uniquement les unités légales actives ;
-- gérer les couches staging et marts ;
+- construire les couches staging et marts ;
 - enrichir avec France Travail ;
 - enrichir avec API Géo ;
-- envoyer les données vers GCS puis BigQuery.
+- standardiser les colonnes d'intérêt pour l'analyse.
 
 ### 8.3 Recommandation pour la suite
 
-La suite logique du projet sera :
+La suite logique du projet est désormais :
 
-1. finaliser et stabiliser la couche locale raw et prepared ;
-2. envoyer les fichiers prepared vers GCS ;
-3. charger ces fichiers dans BigQuery ;
-4. construire ensuite une couche staging avec les filtres métier.
+- stabiliser l'ingestion raw complète ;
+- charger les deux sources dans BigQuery raw ;
+- construire ensuite une couche staging avec les filtres métier ;
+- appliquer les réductions de colonnes et normalisations dans dbt ;
+- construire les tables analytiques aval.
 
 ---
 
-## 9. Tests
+## 9. Robustesse technique de l'ingestion
+
+### 9.1 Client HTTP
+
+Les téléchargements utilisent **httpx**, conformément à l'alignement souhaité dans le projet.
+
+### 9.2 Retry
+
+Les appels réseau critiques utilisent **tenacity** avec retry exponentiel.
+
+### 9.3 Validation du fichier téléchargé
+
+La validation du fichier téléchargé repose sur le magic number Parquet (`PAR1`), ce qui est plus robuste qu'une simple vérification de l'URL finale.
+
+### 9.4 Logs
+
+Les logs passent par `get_logger(__name__)`, ce qui homogénéise la journalisation avec le reste du projet et permet une bonne exploitation dans les environnements cloud.
+
+### 9.5 Fraîcheur
+
+Le contrôle bloquant de fraîcheur a été retiré dans l'implémentation retenue.
+Le pipeline recharge la source disponible au moment de l'exécution, puis l'écrasement logique est géré par le flux GCS/BigQuery.
+
+---
+
+## 10. Tests
 
 Le projet contient également un fichier de test :
 
-- `tests/test_ingest.py`
+- `tests/test_sirene_ingestion.py`
 
 Ce fichier ne s'exécute jamais automatiquement lors du lancement de l'ingestion.
 
-### 9.1 Exécution du script principal
+### 10.1 Exécution du script principal
 
 Pour exécuter l'ingestion réelle :
 
@@ -407,60 +395,65 @@ Pour exécuter l'ingestion réelle :
 python -m sirene.ingest
 ```
 
-### 9.2 Exécution des tests
+### 10.2 Exécution des tests
 
-Pour lancer les te#sts :
+Pour lancer les tests :
 
 ```bash
 pytest
 ```
 
-ou :
+Ou :
 
 ```bash
 pytest tests/test_sirene_ingestion.py
 ```
 
-### 9.3 Rôle des tests
+### 10.3 Rôle des tests
 
 Les tests servent à vérifier :
 
 - le parsing des dates ;
 - le nommage des fichiers ;
-- la sélection correcte des colonnes ;
-- la création d'un parquet allégé avec uniquement les colonnes demandées.
+- la validation du format ;
+- la validation du magic number Parquet ;
+- les erreurs sur des métadonnées incomplètes ;
+- l'orchestration de l'ingestion sans connexion réelle aux services externes.
 
-Ils servent donc à sécuriser le code, pas à exécuter l'ingestion mensuelle.
+Ils servent donc à sécuriser le code, pas à exécuter l'ingestion mensuelle réelle.
 
 ---
 
-## 10. Synthèse finale
+## 11. Synthèse finale
 
-### 10.1 Ce que nous faisons aujourd'hui
+### 11.1 Ce que nous faisons aujourd'hui
 
-Nous téléchargeons mensuellement deux fichiers Sirene :
+Nous ingérons deux fichiers Sirene :
 
 - `StockEtablissement`
 - `StockUniteLegale`
 
-Puis nous produisons pour chacun :
+Chaque exécution :
 
-- une copie brute (`raw`) ;
-- une copie allégée (`prepared`).
+- télécharge la version source complète ;
+- valide le fichier ;
+- l'envoie dans GCS ;
+- le charge dans BigQuery raw.
 
-### 10.2 Ce que contient réellement la couche prepared
+### 11.2 Ce que contient réellement la couche raw
 
-La couche prepared :
+La couche raw :
 
 - conserve le format Parquet ;
 - ne modifie pas les valeurs ;
-- ne filtre pas encore les lignes ;
-- ne garde que les colonnes jugées utiles à partir de l'exploration.
+- ne filtre pas les lignes ;
+- ne filtre pas les colonnes ;
+- reste au plus proche de la source publiée.
 
-### 10.3 Décision de conception retenue
+### 11.3 Décision de conception retenue
 
 La logique actuelle est donc :
 
-> **ingestion locale + réduction de colonnes uniquement**
+> **ingestion technique complète de la source, sans réduction de colonnes dans le raw**
 
-Toute logique métier complémentaire sera gérée dans une étape suivante du pipeline.
+Toute logique métier complémentaire sera gérée dans les étapes suivantes du pipeline, en particulier dans la couche de staging.
