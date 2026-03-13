@@ -24,19 +24,21 @@ logger = get_logger(__name__)
     reraise=True,
 )
 def fetch_geo_data(resource):
-    # --- [6] RESOURCES est maintenant un dict {resource: fields}.
-    #     On passe ?fields=... à l'API pour ne récupérer que les
-    #     champs utiles au projet. Sans ça, /communes retourne
-    #     tous les champs dont contour (~34 Mo de polygones inutiles).
     url = f"{BASE_URL}/{resource}"
     params = {"fields": RESOURCES[resource]}
-    logger.info(f"Appel API : {url}")
+    # --- [7] kwargs structlog au lieu de f-string.
+    #     Les variables passées en kwargs sont exploitables
+    #     dans les sinks (CloudWatch, BigQuery, etc.).
+    logger.info("api_call", url=url, resource=resource)
     response = httpx.get(url, params=params, timeout=10)
     response.raise_for_status()
     return response.json()
 
 
 def run():
+    # --- [10] log début de run() avec liste des resources.
+    logger.info("ingestion_start", source="geo", resources=list(RESOURCES.keys()))
+
     for resource in RESOURCES:
         try:
             data = fetch_geo_data(resource)
@@ -46,20 +48,30 @@ def run():
 
             with open(local_path, "w", encoding="utf-8") as f:
                 f.write(jsonl_data)
+            # --- [7] log écriture locale.
+            logger.info("local_file_written", path=local_path, rows=len(data))
 
             gcs_uri = upload_to_gcs(local_path, "geo")
-            logger.info(f"Fichier GCS mis à jour : {gcs_uri}")
+            # --- [7] log upload GCS.
+            logger.info("gcs_upload_ok", gcs_uri=gcs_uri)
 
             table_id = f"geo_{resource}"
 
             load_gcs_to_bq(gcs_uri, "raw", table_id)
-            logger.info(f"Table BQ mise à jour : raw.{table_id}")
+            # --- [7] log load BQ.
+            logger.info("bq_load_ok", table=f"raw.{table_id}")
 
             if os.path.exists(local_path):
                 os.remove(local_path)
 
         except Exception as e:
-            logger.error(f"Erreur ingestion {resource}: {e}", exc_info=True)
+            # --- [7] log erreur structuré.
+            logger.error(
+                "ingestion_error", resource=resource, error=str(e), exc_info=True
+            )
+
+    # --- [10] log fin de run().
+    logger.info("ingestion_end", source="geo")
 
 
 if __name__ == "__main__":
