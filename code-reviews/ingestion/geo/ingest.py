@@ -29,12 +29,15 @@ def run():
             with open(local_path, "w", encoding="utf-8") as f:
                 f.write(jsonl_data)
 
-            blob_name = f"geo/{resource}.json"
+            # --- [1] upload_to_gcs : on passe (local_path, prefix) au lieu de
+            #     (BUCKET_NAME, blob_name, jsonl_data). C'est shared/ qui gère
+            #     le bucket, le path daté, et le upload depuis le fichier local.
+            gcs_uri = upload_to_gcs(local_path, "geo")
 
-            upload_to_gcs(BUCKET_NAME, blob_name, jsonl_data)
-            logger.info(f"Fichier GCS mis à jour : {blob_name}")
+            # --- [2] gcs_uri est maintenant le retour de upload_to_gcs,
+            #     plus besoin de le construire manuellement.
+            logger.info(f"Fichier GCS mis à jour : {gcs_uri}")
 
-            gcs_uri = f"gs://{BUCKET_NAME}/{blob_name}"
             table_id = f"geo_{resource}"
 
             load_gcs_to_bq(gcs_uri, DATASET_ID, table_id)
