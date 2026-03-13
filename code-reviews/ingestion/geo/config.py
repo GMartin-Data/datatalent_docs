@@ -1,6 +1,5 @@
-BUCKET_NAME = "datatalent-glaq-2-raw"
-
-DATASET_ID = "datatalent-glaq-2"
+# --- [5] BUCKET_NAME et DATASET_ID supprimés :
+#     shared/ encapsule ces valeurs, ingest.py ne les utilise plus.
 
 RESOURCES = ["regions", "departements", "communes"]
 

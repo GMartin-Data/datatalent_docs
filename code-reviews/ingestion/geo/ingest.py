@@ -2,7 +2,12 @@ import json
 import os
 
 import requests
-from geo.config import BASE_URL, BUCKET_NAME, DATASET_ID, RESOURCES
+from geo.config import (
+    BASE_URL,
+    RESOURCES,
+)  # --- [5] BUCKET_NAME et DATASET_ID retirés :
+
+#     shared/ encapsule les deux.
 from shared.bigquery import load_gcs_to_bq
 from shared.gcs import upload_to_gcs
 from shared.logging import get_logger
@@ -29,19 +34,18 @@ def run():
             with open(local_path, "w", encoding="utf-8") as f:
                 f.write(jsonl_data)
 
-            # --- [1] upload_to_gcs : on passe (local_path, prefix) au lieu de
-            #     (BUCKET_NAME, blob_name, jsonl_data). C'est shared/ qui gère
-            #     le bucket, le path daté, et le upload depuis le fichier local.
+            # --- [1] upload_to_gcs : signature contrat shared/.
             gcs_uri = upload_to_gcs(local_path, "geo")
-
-            # --- [2] gcs_uri est maintenant le retour de upload_to_gcs,
-            #     plus besoin de le construire manuellement.
             logger.info(f"Fichier GCS mis à jour : {gcs_uri}")
 
             table_id = f"geo_{resource}"
 
-            load_gcs_to_bq(gcs_uri, DATASET_ID, table_id)
-            logger.info(f"Table BQ mise à jour : {DATASET_ID}.{table_id}")
+            # --- [2] load_gcs_to_bq : on passe (gcs_uri, "raw", table_id)
+            #     au lieu de (gcs_uri, DATASET_ID, table_id).
+            #     Le dataset cible est "raw" (contrat shared/),
+            #     pas le project ID "datatalent-glaq-2".
+            load_gcs_to_bq(gcs_uri, "raw", table_id)
+            logger.info(f"Table BQ mise à jour : raw.{table_id}")
 
             if os.path.exists(local_path):
                 os.remove(local_path)
