@@ -385,8 +385,8 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 
 ### Stock Sirene
 
-- StockEtablissement Parquet : ~40M lignes brut, ~15M actifs, ~2-3 Go
-- Chargement complet dans BigQuery raw (D11), filtrage `etatAdministratifEtablissement = 'A'` en staging
+- StockEtablissement Parquet (~40M lignes, ~2-3 Go) + StockUniteLegale (~25M lignes, ~1 Go)
+- Chargement complet des deux fichiers dans BigQuery raw (D11), filtrage `etatAdministratifEtablissement = 'A'` en staging, jointure SIREN entre les deux en intermediate
 - Pas de filtrage NAF dans Sirene — enrichissement seulement
 - RGPD : `statutDiffusionEtablissement = 'P'` → adresse masquée, à gérer en staging
 - Refresh mensuel automatisé prévu pour Bloc 3 (D12)

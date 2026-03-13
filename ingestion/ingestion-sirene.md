@@ -3,7 +3,7 @@
 ## Contexte
 
 Projet DataTalent — pipeline data GCP, équipe de 4 devs.
-Source la plus simple en logique mais la plus volumineuse (~2-3 Go Parquet, ~40M lignes).
+Source la plus simple en logique mais la plus volumineuse (~3-4 Go Parquet total, deux fichiers).
 Assignée à Collègue 2. Dépend de `ingestion/shared/` (composant `ingestion-shared`, implémenté en amont).
 
 ## Périmètre
@@ -11,7 +11,7 @@ Assignée à Collègue 2. Dépend de `ingestion/shared/` (composant `ingestion-s
 ### Dedans
 
 - `ingestion/sirene/ingest.py` — téléchargement Parquet depuis data.gouv.fr → écriture locale → `shared/gcs.py` → `shared/bigquery.py`. Expose `run()`
-- `ingestion/sirene/config.py` — URL data.gouv.fr, nom du fichier StockEtablissement
+- `ingestion/sirene/config.py` — URL data.gouv.fr, resource IDs StockEtablissement + StockUniteLegale
 - `ingestion/sirene/__init__.py`
 
 ### Dehors
@@ -28,12 +28,12 @@ Assignée à Collègue 2. Dépend de `ingestion/shared/` (composant `ingestion-s
 ### Accès
 
 - **Source :** data.gouv.fr, téléchargement libre, aucune authentification
-- **Fichier retenu :** StockEtablissement (Parquet) — pas StockUniteLegale
-- **Justification :** le SIRET identifie un établissement (site physique), pas une entreprise. Les offres France Travail référencent le SIRET de l'établissement qui recrute
+- **Fichiers retenus :** StockEtablissement (Parquet) + StockUniteLegale (Parquet)
+- **Justification :** StockEtablissement fournit la jointure SIRET avec les offres et la dimension géographique. StockUniteLegale apporte des dimensions BI indisponibles autrement : `categorieEntreprise` (PME/ETI/GE), `categorieJuridiqueUniteLegale`, `trancheEffectifsUniteLegale`, `denominationUniteLegale` (nom officiel). Jointure entre les deux sur `siren`.
 - **Fréquence publication :** mensuel — image au dernier jour du mois précédent, publiée le 1er du mois suivant
-- **Volume :** ~2-3 Go (Parquet), ~40M lignes
+- **Volume :** StockEtablissement ~2-3 Go (~40M lignes), StockUniteLegale ~1 Go (~25M lignes)
 
-### Schéma (champs utiles)
+### Schéma StockEtablissement (champs utiles)
 
 | Champ | Description | Usage projet |
 |-------|-------------|-------------|
@@ -49,14 +49,28 @@ Assignée à Collègue 2. Dépend de `ingestion/shared/` (composant `ingestion-s
 | `codeCommuneEtablissement` | Code INSEE commune | Jointure API Géo |
 | `statutDiffusionEtablissement` | O (diffusible) / P (partiel) | RGPD — masquer adresses si P |
 
-**Règle raw :** chargement du Parquet complet tel quel. Pas de filtrage, pas de sélection de colonnes. Le schéma ci-dessus documente les champs utiles pour les couches aval.
+### Schéma StockUniteLegale (champs utiles)
+
+| Champ | Description | Usage projet |
+|-------|-------------|-------------|
+| `siren` | Identifiant entreprise (9 chiffres) | **Clé de jointure Etablissement** |
+| `denominationUniteLegale` | Nom juridique officiel | Dashboard, plan B jointure par nom |
+| `categorieEntreprise` | PME / ETI / GE | **Dimension BI taille entreprise** |
+| `categorieJuridiqueUniteLegale` | Forme juridique (SA, SAS, SARL…) | Dimension BI structure |
+| `trancheEffectifsUniteLegale` | Tranche effectifs entreprise | Dimension taille (niveau entreprise) |
+| `activitePrincipaleUniteLegale` | Code NAF entreprise | Enrichissement secteur |
+| `etatAdministratifUniteLegale` | A (actif) / C (cessé) | Filtrage staging |
+| `economieSocialeSolidaireUniteLegale` | O / N / null | Enrichissement |
+
+**Règle raw :** chargement du Parquet complet tel quel pour chaque fichier. Pas de filtrage, pas de sélection de colonnes. Les schémas ci-dessus documentent les champs utiles pour les couches aval.
 
 ### Volume par étape
 
 | Étape | Volume estimé |
 |-------|--------------|
 | StockEtablissement brut (raw) | ~40M lignes |
-| Après filtre actifs (staging) | ~15M lignes |
+| StockUniteLegale brut (raw) | ~25M lignes |
+| Après filtre actifs (staging) | ~15M établissements, ~12M unités légales |
 | Après jointure avec offres (intermediate) | ~500-2000 lignes |
 
 ## Flux d'exécution
@@ -64,13 +78,17 @@ Assignée à Collègue 2. Dépend de `ingestion/shared/` (composant `ingestion-s
 ```
 run()
   │
-  ├── 1. Téléchargement du Parquet depuis data.gouv.fr → /tmp/StockEtablissement.parquet
+  ├── Pour chaque fichier (StockEtablissement, StockUniteLegale) :
+  │     │
+  │     ├── 1. Téléchargement du Parquet depuis data.gouv.fr → /tmp/{fichier}.parquet
+  │     │
+  │     ├── 2. shared/gcs.py → upload_to_gcs(local_path, "sirene")
+  │     │       → gs://datatalent-raw/sirene/YYYY-MM-DD/{fichier}.parquet
+  │     │
+  │     └── 3. shared/bigquery.py → load_gcs_to_bq(gcs_uri, "raw", "{table}")
+  │             → raw.sirene_etablissement / raw.sirene_unite_legale
   │
-  ├── 2. shared/gcs.py → upload_to_gcs(local_path, "sirene")
-  │       → gs://datatalent-raw/sirene/YYYY-MM-DD/StockEtablissement.parquet
-  │
-  └── 3. shared/bigquery.py → load_gcs_to_bq(gcs_uri, "raw", "sirene")
-          → raw.sirene (partitionnée par _ingestion_date)
+  └── Terminé
 ```
 
 ## Idempotence
@@ -81,18 +99,20 @@ run()
 
 | Entrée | Fournisseur |
 |---|---|
-| Fichier StockEtablissement sur data.gouv.fr | INSEE (libre) |
+| Fichiers StockEtablissement + StockUniteLegale sur data.gouv.fr | INSEE (libre) |
 | Interface `shared/` stable | Composant `ingestion-shared` |
 
 | Sortie | Consommateur |
 |---|---|
 | `gs://datatalent-raw/sirene/YYYY-MM-DD/StockEtablissement.parquet` | BigQuery load job |
-| Table `raw.sirene` partitionnée par `_ingestion_date` | dbt staging (Bloc 2) |
+| `gs://datatalent-raw/sirene/YYYY-MM-DD/StockUniteLegale.parquet` | BigQuery load job |
+| Table `raw.sirene_etablissement` partitionnée par `_ingestion_date` | dbt staging (Bloc 2) |
+| Table `raw.sirene_unite_legale` partitionnée par `_ingestion_date` | dbt staging (Bloc 2) |
 
 ## Contraintes techniques
 
 - Python 3.12+, httpx (téléchargement), structlog (logging)
-- Téléchargement d'un fichier de ~2-3 Go — prévoir gestion mémoire (streaming vers disque, pas en RAM)
+- Téléchargement de deux fichiers (~2-3 Go + ~1 Go) — prévoir gestion mémoire (streaming vers disque, pas en RAM)
 - Auth GCP : Application Default Credentials
 - Retry réseau via tenacity (backoff exponentiel) sur le téléchargement
 
@@ -103,6 +123,6 @@ run()
 
 ## Décisions de référence
 
-- D11 : chargement complet, pas de pré-filtrage NAF ni statut
+- D11 : chargement complet des deux fichiers, pas de pré-filtrage NAF ni statut
 - D12 : refresh mensuel automatisé (Bloc 3)
 - D14 : jointure SIRET offres ↔ Sirene, LEFT JOIN, taux estimé 20-40%
