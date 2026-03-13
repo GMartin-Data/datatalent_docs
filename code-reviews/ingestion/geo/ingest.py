@@ -26,9 +26,6 @@ logger = get_logger(__name__)
 def fetch_geo_data(resource):
     url = f"{BASE_URL}/{resource}"
     params = {"fields": RESOURCES[resource]}
-    # --- [7] kwargs structlog au lieu de f-string.
-    #     Les variables passées en kwargs sont exploitables
-    #     dans les sinks (CloudWatch, BigQuery, etc.).
     logger.info("api_call", url=url, resource=resource)
     response = httpx.get(url, params=params, timeout=10)
     response.raise_for_status()
@@ -36,8 +33,12 @@ def fetch_geo_data(resource):
 
 
 def run():
-    # --- [10] log début de run() avec liste des resources.
     logger.info("ingestion_start", source="geo", resources=list(RESOURCES.keys()))
+
+    # --- [9] On collecte les erreurs au lieu d'avaler silencieusement.
+    #     Toutes les resources sont tentées, mais run() raise en fin
+    #     si au moins une a échoué → Cloud Run Job sort en erreur.
+    errors: list[str] = []
 
     for resource in RESOURCES:
         try:
@@ -48,29 +49,32 @@ def run():
 
             with open(local_path, "w", encoding="utf-8") as f:
                 f.write(jsonl_data)
-            # --- [7] log écriture locale.
             logger.info("local_file_written", path=local_path, rows=len(data))
 
             gcs_uri = upload_to_gcs(local_path, "geo")
-            # --- [7] log upload GCS.
             logger.info("gcs_upload_ok", gcs_uri=gcs_uri)
 
             table_id = f"geo_{resource}"
 
             load_gcs_to_bq(gcs_uri, "raw", table_id)
-            # --- [7] log load BQ.
             logger.info("bq_load_ok", table=f"raw.{table_id}")
 
             if os.path.exists(local_path):
                 os.remove(local_path)
 
         except Exception as e:
-            # --- [7] log erreur structuré.
             logger.error(
                 "ingestion_error", resource=resource, error=str(e), exc_info=True
             )
+            # --- [9] On enregistre l'échec mais on continue la boucle
+            #     pour tenter les autres resources.
+            errors.append(resource)
 
-    # --- [10] log fin de run().
+    # --- [9] Synthèse en fin de run().
+    if errors:
+        logger.error("ingestion_partial_failure", failed=errors)
+        raise RuntimeError(f"Ingestion failed for: {', '.join(errors)}")
+
     logger.info("ingestion_end", source="geo")
 
 
