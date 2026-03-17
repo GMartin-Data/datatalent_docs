@@ -89,9 +89,10 @@
 
 ### D11 — Stock Sirene : chargement complet (pas de pré-filtrage)
 
-- **Fichier retenu :** StockEtablissement (Parquet, ~2-3 Go), pas StockUniteLegale
+- **Fichiers retenus :** StockEtablissement (Parquet, ~2-3 Go) + StockUniteLegale (Parquet)
+- **Tables raw :** `raw.sirene_etablissement`, `raw.sirene_unite_legale`
 - **Stratégie :** upload Parquet complet → GCS → BigQuery raw, filtrage en dbt staging
-- **Justification :** conforme au pattern Medallion (raw = brut intégral), simple, idempotent, coût négligeable
+- **Justification :** conforme au pattern Medallion (raw = brut intégral), simple, idempotent, coût négligeable. StockUniteLegale ajouté car le fallback de jointure par nom d'entreprise (D14) nécessite `denominationUniteLegale` qui n'est pas dans StockEtablissement
 - **Pas de filtrage par codes NAF** dans Sirene : un Data Engineer peut être recruté par n'importe quel secteur (banque, retail, industrie...). Le NAF sert à enrichir, pas à filtrer.
 
 ### D12 — Refresh mensuel Sirene (automatisation Bloc 3)
