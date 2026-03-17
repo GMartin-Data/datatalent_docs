@@ -92,7 +92,7 @@ ROME = Répertoire Opérationnel des Métiers et des Emplois. Nomenclature Franc
 
 ---
 
-## B2 — Stock Sirene INSEE (Établissements)
+## B2 — Stock Sirene INSEE (Établissements & Unités Légales)
 
 ### Accès
 
@@ -101,25 +101,38 @@ ROME = Répertoire Opérationnel des Métiers et des Emplois. Nomenclature Franc
 - **Format :** CSV (ZIP) et **Parquet** (disponible depuis juin 2025)
 - **Fréquence :** mensuel — image au dernier jour du mois précédent, publiée le 1er du mois suivant
 
-### Fichier retenu : StockEtablissement (Parquet)
+### Fichiers retenus : StockEtablissement + StockUniteLegale (Parquet)
 
-Pas StockUniteLegale. Raison : le SIRET identifie un **établissement** (site physique), pas une entreprise. Les offres France Travail référencent le SIRET de l'établissement qui recrute. Une entreprise (SIREN) peut avoir plusieurs établissements (SIRET).
+StockEtablissement fournit la jointure SIRET avec les offres France Travail et la dimension géographique (adresse, commune, code postal). StockUniteLegale apporte des dimensions BI indisponibles autrement : `categorieEntreprise` (PME/ETI/GE), `categorieJuridiqueUniteLegale` (forme juridique), `trancheEffectifsUniteLegale` (effectif au niveau entreprise), `denominationUniteLegale` (nom officiel). La jointure entre les deux se fait sur `siren`.
 
-### Champs utiles
+### Champs utiles — StockEtablissement
 
 | Champ | Description | Usage projet |
 |-------|-------------|-------------|
 | `siret` | Identifiant établissement (14 chiffres) | **Clé de jointure France Travail** |
-| `siren` | Identifiant entreprise (9 chiffres) | Regroupement par entreprise |
+| `siren` | Identifiant entreprise (9 chiffres) | **Clé de jointure UniteLegale** |
 | `denominationUniteLegale` | Nom juridique officiel | Plan B jointure par nom |
 | `denominationUsuelleEtablissement` | Nom d'usage | Plan B jointure par nom |
 | `activitePrincipaleEtablissement` | Code NAF/APE | Enrichissement secteur |
-| `trancheEffectifsEtablissement` | Tranche d'effectifs | Dimension taille |
+| `trancheEffectifsEtablissement` | Tranche d'effectifs | Dimension taille (site) |
 | `etatAdministratifEtablissement` | A (actif) / F (fermé) | Filtrage staging |
 | `codePostalEtablissement` | Code postal | Dimension géographique |
 | `libelleCommuneEtablissement` | Nom commune | Dashboard |
 | `codeCommuneEtablissement` | Code INSEE commune | Jointure API Géo |
 | `statutDiffusionEtablissement` | O (diffusible) / P (partiel) | RGPD — masquer adresses si P |
+
+### Champs utiles — StockUniteLegale
+
+| Champ | Description | Usage projet |
+|-------|-------------|-------------|
+| `siren` | Identifiant entreprise (9 chiffres) | **Clé de jointure Etablissement** |
+| `denominationUniteLegale` | Nom juridique officiel | Dashboard, plan B jointure par nom |
+| `categorieEntreprise` | PME / ETI / GE | **Dimension BI taille entreprise** |
+| `categorieJuridiqueUniteLegale` | Forme juridique (SA, SAS, SARL…) | Dimension BI structure |
+| `trancheEffectifsUniteLegale` | Tranche effectifs entreprise | Dimension taille (entreprise) |
+| `activitePrincipaleUniteLegale` | Code NAF entreprise | Enrichissement secteur |
+| `etatAdministratifUniteLegale` | A (actif) / C (cessé) | Filtrage staging |
+| `economieSocialeSolidaireUniteLegale` | O / N / null | Enrichissement |
 
 ### Codes NAF pertinents (enrichissement, PAS filtrage)
 
@@ -140,20 +153,22 @@ Les codes NAF classifient l'activité de l'entreprise. Utiles pour enrichir les 
 | Étape | Volume estimé |
 |-------|--------------|
 | StockEtablissement brut | ~40M lignes, ~2-3 Go (Parquet) |
-| Après filtre actifs (staging) | ~15M lignes |
+| StockUniteLegale brut | ~25M lignes, ~1 Go (Parquet) |
+| Après filtre actifs (staging) | ~15M établissements, ~12M unités légales |
 | Après jointure avec offres France Travail (intermediate) | ~500-2000 lignes |
 
 ### Stratégie de chargement (D11)
 
-- Upload du Parquet **complet** vers GCS → chargement dans BigQuery raw
-- Filtrage en dbt staging : `WHERE etatAdministratifEtablissement = 'A'`
+- Upload des deux Parquet **complets** vers GCS → chargement dans BigQuery raw (deux tables : `sirene_etablissement`, `sirene_unite_legale`)
+- Filtrage en dbt staging : `WHERE etatAdministratifEtablissement = 'A'` / `WHERE etatAdministratifUniteLegale = 'A'`
+- Jointure Etablissement → UniteLegale sur `siren` en dbt intermediate
 - Conforme au pattern Medallion (raw = brut intégral)
-- BigQuery gère sans problème une table de 40M lignes
+- BigQuery gère sans problème ces volumes
 
 ### Refresh (D12)
 
 - Bloc 1 : chargement unique du stock courant
-- Bloc 3 (automatisation) : Cloud Scheduler cron `0 6 2 * *` → Cloud Run re-télécharge, upload GCS avec prefix daté (`sirene/YYYY-MM/`), recharge BigQuery raw
+- Bloc 3 (automatisation) : Cloud Scheduler cron `0 6 2 * *` → Cloud Run re-télécharge les Parquet, upload GCS avec prefix daté (`sirene/YYYY-MM/`), recharge BigQuery raw
 
 ### Point RGPD
 
@@ -161,7 +176,7 @@ Les établissements avec `statutDiffusionEtablissement = 'P'` ont demandé une d
 
 ### Décisions associées
 
-- **D11 :** Chargement complet, pas de pré-filtrage
+- **D11 :** Chargement complet des deux fichiers, pas de pré-filtrage
 - **D12 :** Refresh mensuel automatisé (Bloc 3)
 
 ---
@@ -243,25 +258,28 @@ Le modèle intermediate dbt doit combiner 3 sources pour répondre à "Où recru
 
 ```
 stg_offres (France Travail)
-  LEFT JOIN stg_sirene       ON offres.siret = sirene.siret
-  LEFT JOIN ref_communes      ON offres.code_commune = communes.code
-  LEFT JOIN ref_departements  ON communes.code_departement = departements.code
-  LEFT JOIN ref_regions       ON departements.code_region = regions.code
+  LEFT JOIN stg_sirene_etablissement  ON offres.siret = etablissement.siret
+  LEFT JOIN stg_sirene_unite_legale   ON etablissement.siren = unite_legale.siren
+  LEFT JOIN ref_communes              ON offres.code_commune = communes.code
+  LEFT JOIN ref_departements          ON communes.code_departement = departements.code
+  LEFT JOIN ref_regions               ON departements.code_region = regions.code
 ```
 
-### Jointure 1 : Offres ↔ Sirene (SIRET)
+### Jointure 1 : Offres ↔ Sirene (SIRET → SIREN)
 
 | Aspect | Détail |
 |--------|--------|
 | Clé côté offres | `entreprise.siret` (string, 14 chiffres) |
-| Clé côté Sirene | `siret` (string, 14 chiffres) |
+| Clé côté Etablissement | `siret` (string, 14 chiffres) |
+| Clé Etablissement → UniteLegale | `siren` (string, 9 chiffres) |
 | Type de jointure | `LEFT JOIN` (ne pas perdre les offres sans SIRET) |
 | Taux de matching estimé | **20-40%** (SIRET souvent absent ou masqué) |
-| Enrichissement obtenu | `denominationUniteLegale`, `activitePrincipaleEtablissement` (NAF), `trancheEffectifsEtablissement` |
+| Enrichissement obtenu (Etablissement) | `activitePrincipaleEtablissement` (NAF), `trancheEffectifsEtablissement`, adresse, commune |
+| Enrichissement obtenu (UniteLegale) | `denominationUniteLegale`, `categorieEntreprise` (PME/ETI/GE), `categorieJuridiqueUniteLegale`, `trancheEffectifsUniteLegale` |
 
 **Pourquoi LEFT JOIN :** un INNER JOIN éliminerait 60-80% des offres, rendant les analyses géographiques et salariales non représentatives. Les offres sans SIRET restent utiles pour les axes "où" et "à quel salaire".
 
-**Pré-traitement staging :** normaliser le SIRET (supprimer espaces, vérifier longueur 14, cast en string), filtrer Sirene sur `etatAdministratifEtablissement = 'A'`.
+**Pré-traitement staging :** normaliser le SIRET (supprimer espaces, vérifier longueur 14, cast en string), filtrer Sirene sur `etatAdministratifEtablissement = 'A'` et `etatAdministratifUniteLegale = 'A'`.
 
 ### Plan B : matching par nom d'entreprise
 
