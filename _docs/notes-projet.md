@@ -84,7 +84,8 @@
 
 - Le package PyPI `api-offres-emploi` date de 2020, non maintenu → coder directement (~50 lignes)
 - Helper `get_token()` avec cache + renouvellement avant expiration (token ~25 min)
-- Rate limiting : `time.sleep(0.35)` entre requêtes (limite API = 3 req/s → 1 req/333ms, 350ms = marge de sécurité)
+- **Rate limiting (mis à jour 2026-03-17) :** limite réelle = **10 req/s** (constatée sur le portail francetravail.io, application DataTalent-Greg). L'ancienne valeur de 3 req/s provenait d'une documentation obsolète.
+- **Throttle préventif :** `time.sleep(0.15)` entre requêtes (~6.6 req/s, conservateur). Remplace le `sleep(0.35)` initial qui était basé sur la limite de 3 req/s.
 - Retry exponentiel via `tenacity` : en cas d'échec (429, 500, 503), réessayer après 1s → 2s → 4s → 8s → abandon
 
 ### D11 — Stock Sirene : chargement complet (pas de pré-filtrage)
