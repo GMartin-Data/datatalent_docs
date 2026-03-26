@@ -1,14 +1,15 @@
 # Notes Projet — Pipeline Data Engineer (Brief DataTalent)
 
 **Créé le :** 2025-03-08
-**Dernière mise à jour :** 2026-03-09 (D26 ajoutée)
+**Dernière mise à jour :** 2026-03-25 (D35-D37 ajoutées — sources complémentaires data.gouv.fr)
 
 ---
 
 ## Contexte
 
 - **Brief :** Pipeline end-to-end cloud pour analyser le marché de l'emploi Data Engineer en France
-- **Sources :** API France Travail (OAuth2), Stock Sirene INSEE (Parquet, multi-Go), API Géo (libre)
+- **Sources brief :** API France Travail (OAuth2), Stock Sirene INSEE (Parquet, multi-Go), API Géo (libre)
+- **Sources complémentaires (D35) :** URSSAF effectifs commune × APE, BMO France Travail, URSSAF masse salariale × NA88
 - **Équipe :** 4 personnes (2 en présentiel, 2 en distanciel), 3 × 5 jours espacés de 3 semaines
 - **Évaluation :** Démo technique (70%) + Revue code/architecture (30%)
 
@@ -271,6 +272,53 @@
 - **Production (Cloud Run) :** pas de `.env`. Credentials FT via Secret Manager, auth GCP via SA `sa-ingestion`.
 - **Fichiers versionnés :** `.env.example` (template), `profiles.yml` avec `env_var()`. `.env` et `.envrc` dans `.gitignore`.
 
+### D35 — Sources complémentaires data.gouv.fr (exploration MCP 2026-03-25)
+
+Exploration systématique via le MCP `mcp.data.gouv.fr` — 8 sources évaluées, 3 retenues. Voir `exploration-mcp-datagouv.md` pour les fiches détaillées, `croisement-mcp-x-france-travail.md` pour les impacts croisés avec les findings France Travail.
+
+**Sources retenues :**
+
+| Priorité | Source | Dataset ID | Accès | Valeur | Action |
+|---|---|---|---|---|---|
+| P1 | URSSAF effectifs commune × APE | `5efd242c72595ba1a48628f2` | API Opendatasoft (`open.urssaf.fr`) | **Élevée** — seule source NAF5 × commune, compense l'absence de SIRET (D14-bis) | Ingérer (script Python, ~3-4h) |
+| P2 | BMO France Travail (tensions recrutement) | `561fa564c751df4f2acdbb48` | XLSX téléchargement direct | **Élevée** — tensions recrutement IT par bassin d'emploi | Spike d'abord (~1h), intégration conditionnelle |
+| P3 | URSSAF masse salariale × NA88 | `61d784a161825aaf438b8e9e` | API Opendatasoft | **Moyenne** — salaire brut moyen secteur 62 comme benchmark | Seed dbt (~30 min) |
+
+**Sources écartées :**
+- **BTS INSEE (salaires secteur privé)** — NAF agrégé A17 (`J` = tout le secteur Information & Communication). Granularité insuffisante pour un benchmark Data Engineer. Dataset ID `67f85d13377ef83a019ac73f`.
+- **APEC (rémunération cadres)** — Données non structurées sur data.gouv.fr (XLSX "humain", 37 onglets, 1 seul lisible via Tabular API). Édition 2022, données 2021. Aucune ventilation par fonction visible.
+- **DARES (emplois vacants)** — Indicateur macro par grand secteur, pas de granularité métier.
+- **Adzuna** — Évaluée et écartée : scope creep hors brief (4ème source non mandatée), déduplication avec France Travail irrésoluble (pas de clé commune), salaires estimés par ML (mélange méthodologique), double pipeline staging pour gain marginal.
+
+**APIs projet confirmées via `search_dataservices` (aucun changement d'URL) :**
+- France Travail Offres : `https://francetravail.io/produits-partages/catalogue/offres-emploi`
+- Recherche Entreprises : `https://recherche-entreprises.api.gouv.fr`
+- API Géo : `https://geo.api.gouv.fr`
+
+**Découverte bonus — NAF 2025 :** la colonne `activitePrincipaleNAF25Etablissement` est déjà diffusée dans Sirene à titre informatif. Transition officielle au 1er janvier 2027. Aucun impact immédiat sur le projet mais bon à savoir.
+
+### D36 — Seeds dbt pour tables référentielles < 1000 lignes
+
+- **Principe :** les tables de référence à faible volume (< 1000 lignes) sont chargées via `dbt seed` au lieu du chemin classique (script Python → GCS → BigQuery raw → staging).
+- **Justification :** court-circuite l'ingestion, le CSV est versionné dans Git (auditabilité), `dbt seed` suffit. Compromis assumé avec le pattern Medallion — pas de couche raw pour ces données.
+- **Tables concernées :**
+  - `dbt/seeds/ref_urssaf_masse_salariale_na88.csv` — P3, ~30 lignes
+  - `dbt/seeds/ref_bmo_projets_recrutement_it.csv` — P2, si le spike valide et que le volume filtré M2Z < 1000 lignes
+- **Config :** `dbt/seeds/_seeds.yml` pour le schema (description des colonnes, tests not_null).
+- **Dataset BigQuery cible :** configurable dans `dbt_project.yml` (schéma `seeds` par défaut, ou rediriger vers `staging` si préféré).
+
+### D37 — URSSAF effectifs : filtrage codes APE IT à l'ingestion
+
+- **Principe :** on ne télécharge pas l'intégralité du dataset URSSAF (toutes communes × tous secteurs) — on filtre à la source via les paramètres API Opendatasoft.
+- **Codes APE retenus :**
+  - `62.01Z` — Programmation informatique
+  - `62.02A` — Conseil en systèmes et logiciels informatiques
+  - `62.03Z` — Gestion d'installations informatiques
+  - `62.09Z` — Autres activités informatiques
+- **Justification :** réduire le volume de ~95% à l'ingestion. Le dataset complet couvre tous les secteurs NAF × toutes les communes × toutes les années depuis 2006. Seuls les 4 codes APE IT sont pertinents pour le projet.
+- **Conséquence :** le filtrage IT est fait à l'ingestion (pas en staging). La table raw `urssaf_effectifs_commune_ape` ne contient que les données IT. C'est un écart assumé avec le pattern Medallion (raw = brut intégral) — justifié par la réduction de volume et le fait que les autres secteurs n'ont aucune utilité pour le projet, même potentielle.
+- **Table intermediate :** `int_densite_sectorielle_commune` agrège les 4 codes APE en un seul total IT par commune × année. Voir `couche-intermediate-datatalent.md`.
+
 ---
 
 ## Mapping des 3 blocs
@@ -435,3 +483,6 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 ---
 
 *Détails d'exploration des sources (B1-B4) : voir `exploration-sources.md`.*
+*Sources complémentaires data.gouv.fr (B5-B7) : voir `exploration-mcp-datagouv.md`.*
+*Croisement des findings : voir `croisement-mcp-x-france-travail.md`.*
+*Construction couche intermediate : voir `couche-intermediate-datatalent.md`.*
