@@ -1,0 +1,100 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '14px', 'fontFamily': 'Segoe UI, Roboto, sans-serif', 'lineColor': '#4c566a'}}}%%
+
+graph LR
+    subgraph Sources["Sources externes"]
+        direction TB
+        subgraph Brief["Sources brief"]
+            FT["API France Travail<br/>OAuth2 · REST · JSON"]
+            SI["Stock Sirene INSEE<br/>data.gouv.fr · Parquet"]
+            GEO["API Géo<br/>REST · JSON · libre"]
+        end
+        subgraph Compl["Sources complémentaires D35"]
+            UE["URSSAF effectifs<br/>API Opendatasoft · JSON"]
+            UM["URSSAF masse sal.<br/>API Opendatasoft · CSV"]
+            BMO["BMO France Travail<br/>XLSX · annuel"]
+        end
+    end
+
+    subgraph Ingestion["Ingestion — Python"]
+        CR["Cloud Run Job<br/>Conteneur Docker"]
+        CS["Cloud Scheduler<br/>Cron hebdo"]
+    end
+
+    subgraph Storage["GCS — Landing Zone"]
+        RAW_GCS["gs://datatalent-raw/<br/>france_travail/YYYY-MM-DD/<br/>sirene/YYYY-MM/<br/>geo/<br/>urssaf_effectifs/YYYY/<br/>bmo/YYYY/ (si script)"]
+    end
+
+    subgraph SeedPath["dbt seeds — repo Git"]
+        SEED["dbt/seeds/<br/>ref_urssaf_masse_sal_na88.csv<br/>ref_bmo_projets_it.csv"]
+    end
+
+    subgraph BigQuery["BigQuery"]
+        direction TB
+        BQ_RAW["raw<br/>france_travail · sirene<br/>geo · urssaf_effectifs"]
+        BQ_SEED["seeds<br/>ref_urssaf_masse_sal_na88<br/>ref_bmo_projets_it"]
+        BQ_STG["staging<br/>stg_france_travail__offres<br/>stg_sirene__etablissements<br/>stg_geo__communes / depts / regions<br/>stg_urssaf__effectifs_commune_ape"]
+        BQ_INT["intermediate<br/>int_offres_enrichies<br/>int_densite_sectorielle_commune<br/>int_tensions_bassin_emploi"]
+        BQ_MARTS["marts<br/>mart_offres<br/>mart_contexte_territorial"]
+
+        BQ_RAW --> BQ_STG
+        BQ_SEED --> BQ_STG
+        BQ_STG --> BQ_INT --> BQ_MARTS
+    end
+
+    subgraph Restitution["Restitution"]
+        LS["Looker Studio<br/>Dashboard public"]
+    end
+
+    subgraph Infra["Transverse"]
+        SM["Secret Manager<br/>Credentials FT"]
+        IAM["IAM<br/>Service Accounts"]
+        TF["Terraform<br/>IaC versionné Git"]
+    end
+
+    subgraph CICD["CI/CD"]
+        GHA["GitHub Actions<br/>lint · dbt test · tf plan · deploy"]
+    end
+
+    FT -->|"OAuth2 + pagination<br/>101 depts × 4 ROME"| CR
+    SI -->|"Téléchargement Parquet<br/>~2 Go"| CR
+    GEO -->|"Snapshot 3 niveaux"| CR
+    UE -->|"API filtrée APE IT<br/>4 codes NAF5 · D37"| CR
+    CS -->|"Déclenche"| CR
+    CR -->|"Upload fichiers bruts"| RAW_GCS
+    RAW_GCS -->|"Load"| BQ_RAW
+
+    UM -->|"curl + nettoyage"| SEED
+    BMO -.->|"si < 1000 lignes"| SEED
+    BMO -.->|"si > 1000 lignes"| CR
+    SEED -->|"dbt seed · D36"| BQ_SEED
+
+    BQ_MARTS --> LS
+
+    SM -.->|"Credentials"| CR
+    IAM -.->|"Permissions"| CR
+    IAM -.->|"Permissions"| BQ_RAW
+    TF -.->|"Provisionne"| Storage
+    TF -.->|"Provisionne"| BigQuery
+    TF -.->|"Provisionne"| Ingestion
+    GHA -.->|"Déploie"| CR
+    GHA -.->|"Exécute dbt"| BQ_STG
+
+    classDef source fill:#dfe6f0,stroke:#5e81ac,stroke-width:1.5px,color:#2e3440
+    classDef sourceNew fill:#e1f5ee,stroke:#0f6e56,stroke-width:1.5px,color:#2e3440
+    classDef ingestion fill:#f2dbd8,stroke:#b55a50,stroke-width:1.5px,color:#2e3440
+    classDef storage fill:#f5edda,stroke:#c9a95a,stroke-width:1.5px,color:#2e3440
+    classDef seed fill:#eeedfe,stroke:#534ab7,stroke-width:1.5px,color:#2e3440
+    classDef warehouse fill:#d8ebdd,stroke:#6b9e78,stroke-width:1.5px,color:#2e3440
+    classDef restitution fill:#e8daf0,stroke:#9472a8,stroke-width:1.5px,color:#2e3440
+    classDef infra fill:#e8e8e8,stroke:#888888,stroke-width:1px,color:#2e3440
+    classDef cicd fill:#d6eae4,stroke:#5d9e8a,stroke-width:1.5px,color:#2e3440
+
+    class FT,SI,GEO source
+    class UE,UM,BMO sourceNew
+    class CR,CS ingestion
+    class RAW_GCS storage
+    class SEED seed
+    class BQ_RAW,BQ_SEED,BQ_STG,BQ_INT,BQ_MARTS warehouse
+    class LS restitution
+    class SM,IAM,TF infra
+    class GHA cicd
