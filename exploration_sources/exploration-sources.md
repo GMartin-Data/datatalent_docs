@@ -1,6 +1,6 @@
 # Exploration des sources de données — Projet DataTalent
 
-**Dernière mise à jour :** 2026-03-25 (B5-B7 ajoutées, B1/B2/B4 mis à jour avec findings exploration)
+**Dernière mise à jour :** 2026-03-27 (B6 révisée — workflow d'ingestion classique, B7 branche seed retirée)
 
 ---
 
@@ -415,14 +415,14 @@ Division masse salariale / effectifs = **salaire brut moyen annuel estimé** pou
 
 **Limites :** France entière uniquement (pas de croisement géographique), toutes CSP confondues.
 
-### Stratégie : seed dbt (D36)
+### Stratégie : workflow d'ingestion classique
 
-Volume trop faible pour justifier un script d'ingestion. Le CSV est téléchargé une fois, nettoyé, placé dans `dbt/seeds/ref_urssaf_masse_salariale_na88.csv`, chargé via `dbt seed`.
+Script Python dans `ingestion/urssaf_masse_salariale/` : requête API Opendatasoft filtrée NA88 = 62 → JSONL local → `shared/gcs.py` → `shared/bigquery.py` → raw. Staging dbt : `stg_urssaf__masse_salariale_na88`. Malgré le faible volume (~30 lignes), le workflow classique est retenu par souci d'uniformité architecturale et d'automatisation homogène via Cloud Run Job.
 
 ### Décisions associées
 
 - **D35 :** Source complémentaire retenue (P3, priorité moyenne)
-- **D36 :** Seed dbt pour table référentielle < 1000 lignes
+- **~~D36~~** annulée — workflow classique d'ingestion pour toutes les sources, quelle que soit la volumétrie
 
 ---
 
@@ -461,8 +461,7 @@ Contexte macro sur les tensions de recrutement IT par territoire. Ne résout pas
 
 ### Stratégie conditionnelle
 
-- **Si spike valide** et volume < 1000 lignes : seed dbt (`dbt/seeds/ref_bmo_projets_recrutement_it.csv`)
-- **Si spike valide** et volume > 1000 lignes : script d'ingestion léger dans `ingestion/bmo/`
+- **Si spike valide :** script d'ingestion dans `ingestion/bmo/` (workflow classique GCS → BQ raw, quelle que soit la volumétrie)
 - **Si spike ne valide pas** (granularité FAP insuffisante) : documenter et écarter
 
 ### Modèles dbt (si validé)
@@ -474,4 +473,4 @@ Contexte macro sur les tensions de recrutement IT par territoire. Ne résout pas
 ### Décisions associées
 
 - **D35 :** Source complémentaire retenue (P2, priorité élevée, conditionnelle)
-- **D36 :** Seed dbt si volume < 1000 lignes
+- **~~D36~~** annulée — workflow classique d'ingestion pour toutes les sources

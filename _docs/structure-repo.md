@@ -1,7 +1,7 @@
 # Structure du Repo — Projet DataTalent
 
-**Dernière mise à jour :** 2026-03-25 (sources complémentaires D35, seeds D36, dbt intermediate)
-**Décisions associées :** D16, D17, D18, D19, D20, D21, D22, D35, D36, D37 (voir `notes-projet.md`)
+**Dernière mise à jour :** 2026-03-27 (D36 annulée — plus de seeds dbt, urssaf_masse_salariale en workflow classique)
+**Décisions associées :** D16, D17, D18, D19, D20, D21, D22, D35, D37 (voir `notes-projet.md`)
 
 ---
 
@@ -35,15 +35,20 @@ datatalent/
 │   │   ├── __init__.py
 │   │   ├── ingest.py
 │   │   └── config.py
-│   ├── urssaf_effectifs/       # NOUVEAU (D35, P1) — effectifs commune × APE
+│   ├── urssaf_effectifs/       # D35, P1 — effectifs commune × APE
 │   │   ├── __init__.py
 │   │   ├── client.py           # Requêtes API Opendatasoft, pagination
 │   │   ├── ingest.py           # Extract filtré APE IT → GCS → BQ raw
 │   │   └── config.py           # URL API, codes APE IT (D37)
-│   ├── bmo/                    # NOUVEAU (D35, P2) — conditionnel, si spike validé
+│   ├── urssaf_masse_salariale/ # D35, P3 — masse salariale × NA88
 │   │   ├── __init__.py
-│   │   ├── parse_xlsx.py       # Extraction + nettoyage XLSX → CSV propre
-│   │   └── ingest.py           # Upload CSV nettoyé (ou copie vers seeds/)
+│   │   ├── client.py           # Requêtes API Opendatasoft, filtre NA88 = 62
+│   │   ├── ingest.py           # Extract → JSONL → GCS → BQ raw
+│   │   └── config.py           # URL API, filtre NA88
+│   ├── bmo/                    # D35, P2 — conditionnel, si spike validé
+│   │   ├── __init__.py
+│   │   ├── parse_xlsx.py       # Extraction + nettoyage XLSX → JSONL
+│   │   └── ingest.py           # Upload JSONL → GCS → BQ raw
 │   ├── shared/                 # ⚠ Stabilisé — interface commune, inchangée
 │   │   ├── __init__.py
 │   │   ├── gcs.py              # upload_to_gcs(local_path, gcs_prefix)
@@ -55,11 +60,9 @@ datatalent/
 │   ├── uv.lock                 # Lockfile déterministe (uv — D20)
 │   └── tests/
 │
-├── dbt/                        # Structure détaillée ci-dessous
+├── dbt/
 │   ├── Dockerfile              # Image dbt-bigquery officielle (D20)
-│   └── seeds/                  # NOUVEAU (D36) — tables référentielles < 1000 lignes
-│       ├── _seeds.yml
-│       └── ref_urssaf_masse_salariale_na88.csv   # P3, ~30 lignes
+│   └── ...                     # Structure détaillée ci-dessous
 │
 ├── infra/
 │   ├── main.tf
@@ -87,7 +90,7 @@ datatalent/
 
 ## Arborescence complète — Référence
 
-Inclut toutes les sources d'ingestion, la sous-arborescence dbt complète (staging, intermediate, marts, seeds), et les tests.
+Inclut toutes les sources d'ingestion, la sous-arborescence dbt complète (staging, intermediate, marts), et les tests.
 
 ```
 datatalent/
@@ -121,6 +124,11 @@ datatalent/
 │   │   ├── client.py
 │   │   ├── ingest.py
 │   │   └── config.py
+│   ├── urssaf_masse_salariale/ # D35, P3 — API Opendatasoft, filtré NA88 = 62
+│   │   ├── __init__.py
+│   │   ├── client.py
+│   │   ├── ingest.py
+│   │   └── config.py
 │   ├── bmo/                    # D35, P2 — conditionnel (spike requis)
 │   │   ├── __init__.py
 │   │   ├── parse_xlsx.py
@@ -138,7 +146,8 @@ datatalent/
 │       ├── test_france_travail.py
 │       ├── test_sirene.py
 │       ├── test_geo.py
-│       └── test_urssaf_effectifs.py
+│       ├── test_urssaf_effectifs.py
+│       └── test_urssaf_masse_salariale.py
 │
 ├── dbt/
 │   ├── Dockerfile
@@ -158,23 +167,20 @@ datatalent/
 │   │   │   │   ├── stg_geo__regions.sql
 │   │   │   │   ├── stg_geo__departements.sql
 │   │   │   │   └── stg_geo__communes.sql
-│   │   │   └── urssaf/                                    # NOUVEAU
+│   │   │   └── urssaf/
 │   │   │       ├── _urssaf__models.yml
-│   │   │       └── stg_urssaf__effectifs_commune_ape.sql
+│   │   │       ├── stg_urssaf__effectifs_commune_ape.sql
+│   │   │       └── stg_urssaf__masse_salariale_na88.sql   # NOUVEAU — P3
 │   │   ├── intermediate/
 │   │   │   ├── _intermediate__models.yml
 │   │   │   ├── int_offres_enrichies.sql                   # LEFT JOIN offres × API Géo (D15)
-│   │   │   ├── int_densite_sectorielle_commune.sql        # NOUVEAU — GROUP BY URSSAF APE IT (D37)
-│   │   │   └── int_tensions_bassin_emploi.sql             # NOUVEAU — conditionnel (BMO, spike P2)
+│   │   │   ├── int_densite_sectorielle_commune.sql        # GROUP BY URSSAF APE IT (D37)
+│   │   │   └── int_tensions_bassin_emploi.sql             # Conditionnel (BMO, spike P2)
 │   │   └── marts/
 │   │       ├── _marts__models.yml
 │   │       ├── mart_offres.sql                            # Dashboard principal
-│   │       └── mart_contexte_territorial.sql              # NOUVEAU — densité IT + tensions + benchmark salaire
+│   │       └── mart_contexte_territorial.sql              # Densité IT + tensions + benchmark salaire
 │   ├── macros/
-│   ├── seeds/                                             # NOUVEAU (D36)
-│   │   ├── _seeds.yml                                     # Schema + description colonnes
-│   │   ├── ref_urssaf_masse_salariale_na88.csv            # P3, ~30 lignes
-│   │   └── ref_bmo_projets_recrutement_it.csv             # P2, conditionnel (si < 1000 lignes)
 │   ├── snapshots/
 │   └── tests/
 │
@@ -224,15 +230,13 @@ datatalent/
 
 | Élément | Convention | Exemple |
 |---------|-----------|---------|
-| Dossiers Python | `snake_case` | `france_travail/`, `urssaf_effectifs/` |
+| Dossiers Python | `snake_case` | `france_travail/`, `urssaf_effectifs/`, `urssaf_masse_salariale/` |
 | Fichiers Python | `snake_case.py` | `client.py`, `ingest.py`, `parse_xlsx.py` |
 | Modules Terraform | `snake_case` | `cloud_run/`, `secret_manager/` |
-| Modèles dbt staging | `stg_{source}__{entité}.sql` | `stg_france_travail__offres.sql`, `stg_urssaf__effectifs_commune_ape.sql` |
+| Modèles dbt staging | `stg_{source}__{entité}.sql` | `stg_france_travail__offres.sql`, `stg_urssaf__masse_salariale_na88.sql` |
 | Modèles dbt intermediate | `int_{concept}.sql` | `int_offres_enrichies.sql`, `int_densite_sectorielle_commune.sql` |
 | Modèles dbt marts | `mart_{domaine}.sql` | `mart_offres.sql`, `mart_contexte_territorial.sql` |
-| Seeds dbt | `ref_{source}_{entité}.csv` | `ref_urssaf_masse_salariale_na88.csv` |
 | YAML dbt modèles | `_{source}__models.yml` | `_sirene__models.yml`, `_urssaf__models.yml` |
-| YAML dbt seeds | `_seeds.yml` | `_seeds.yml` |
 | Branches Git | `{type}/{scope}` | `feat/ingestion-urssaf-effectifs` |
 | Commits | Conventional Commits | `feat(ingestion): add URSSAF effectifs client` |
 
@@ -242,14 +246,15 @@ datatalent/
 
 ```
 gs://datatalent-raw/
-├── france_travail/YYYY-MM-DD/     # Offres hebdomadaires (D19)
-├── sirene/YYYY-MM/                # Stock mensuel (D12)
-├── geo/                           # Snapshot quasi-statique (D13)
-├── urssaf_effectifs/YYYY/         # NOUVEAU — effectifs commune × APE, annuel
-└── bmo/YYYY/                      # NOUVEAU — conditionnel, si script (pas si seed)
+├── france_travail/YYYY-MM-DD/          # Offres hebdomadaires (D19)
+├── sirene/YYYY-MM/                     # Stock mensuel (D12)
+├── geo/                                # Snapshot quasi-statique (D13)
+├── urssaf_effectifs/YYYY/              # Effectifs commune × APE, annuel (D35, P1)
+├── urssaf_masse_salariale/YYYY/        # Masse salariale × NA88, annuel (D35, P3)
+└── bmo/YYYY/                           # Conditionnel (D35, P2)
 ```
 
-Note : les seeds dbt (P3 masse salariale, P2 BMO si < 1000 lignes) ne passent pas par GCS — le CSV est chargé directement par `dbt seed` depuis le fichier versionné dans le repo.
+Toutes les sources transitent par GCS avant chargement BigQuery raw — pas d'exception.
 
 ---
 

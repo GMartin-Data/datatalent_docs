@@ -1,7 +1,7 @@
 # User Stories — Projet DataTalent
 
 **Projet :** Pipeline Data Engineer — Marché de l'emploi tech en France
-**Dernière mise à jour :** 2026-03-25 (US12 ajoutée, US5-US6 précisées post-exploration)
+**Dernière mise à jour :** 2026-03-27 (US12 révisée — D36 annulée, toutes sources en workflow d'ingestion classique)
 
 ---
 
@@ -279,11 +279,11 @@ Après fin de US4 (~J2 après-midi) : Collègue 3 bascule sur T1.4 + T1.5 (carto
 
 **Assigné à :** Greg (pause inter-blocs + Bloc 2)
 
-#### Tâches — P3 : URSSAF masse salariale × NA88 (seed dbt, ~30 min)
-- [ ] **T12.1** Télécharger CSV depuis API Opendatasoft avec filtre NA88 = 62 — *15 min*
-- [ ] **T12.2** Nettoyer en-têtes, placer dans `dbt/seeds/ref_urssaf_masse_salariale_na88.csv` — *10 min*
-- [ ] **T12.3** Écrire `dbt/seeds/_seeds.yml` (schema + description colonnes) — *5 min*
-- [ ] **T12.4** `dbt seed`, vérifier dans BigQuery — *5 min*
+#### Tâches — P3 : URSSAF masse salariale × NA88 (script ingestion, ~1h)
+- [ ] **T12.1** Implémenter `ingestion/urssaf_masse_salariale/client.py` : requête API Opendatasoft filtrée NA88 = 62, pagination `limit`/`offset` — *30 min*
+- [ ] **T12.2** Implémenter `ingestion/urssaf_masse_salariale/ingest.py` : extract → JSONL → `shared/gcs.py` → `shared/bigquery.py` — *15 min*
+- [ ] **T12.3** `stg_urssaf__masse_salariale_na88` : renommage colonnes, typage, tests not_null + unique sur annee — *10 min*
+- [ ] **T12.4** Validation : spot-check salaire brut moyen 2024 (masse/effectifs ≈ 55k€) — *5 min*
 
 #### Tâches — P1 : URSSAF effectifs commune × APE (script ingestion, ~3-4h)
 - [ ] **T12.5** Comprendre l'API Opendatasoft (`open.urssaf.fr`), paramètres de filtrage et pagination — *45 min*
@@ -295,15 +295,14 @@ Après fin de US4 (~J2 après-midi) : Collègue 3 bascule sur T1.4 + T1.5 (carto
 
 #### Tâches — P2 : BMO France Travail (spike, ~1h + intégration conditionnelle)
 - [ ] **T12.11** Spike : télécharger XLSX 2025, identifier codes FAP sous M2Z, évaluer granularité data vs dev vs infra — *1h*
-- [ ] **T12.12** Si validé et < 1000 lignes : extraire CSV, placer en seed — *30 min*
-- [ ] **T12.13** Si validé et > 1000 lignes : script ingestion léger dans `ingestion/bmo/` — *1h*
-- [ ] **T12.14** Si validé : `stg_bmo__projets_recrutement` + `int_tensions_bassin_emploi` (mapping bassin → département) — *1h*
-- [ ] **T12.15** Si spike négatif : documenter dans `exploration-sources.md` B7, passer — *15 min*
+- [ ] **T12.12** Si validé : script ingestion dans `ingestion/bmo/` (workflow classique GCS → BQ raw) — *1h*
+- [ ] **T12.13** Si validé : `stg_bmo__projets_recrutement` + `int_tensions_bassin_emploi` (mapping bassin → département) — *1h*
+- [ ] **T12.14** Si spike négatif : documenter dans `exploration-sources.md` B7, passer — *15 min*
 
 * * *
 
 > **Definition of Done**
-- [ ] P3 : seed `ref_urssaf_masse_salariale_na88` chargé, ~30 lignes dans BigQuery
+- [ ] P3 : table raw `urssaf_masse_salariale_na88` chargée (~30 lignes), `stg_urssaf__masse_salariale_na88` fonctionnel, tests dbt passent
 - [ ] P1 : `stg_urssaf__effectifs_commune_ape` + `int_densite_sectorielle_commune` fonctionnels, tests dbt passent
 - [ ] P2 : spike documenté. Si validé : staging + intermediate fonctionnels. Si non : documenté et classé.
-- [ ] `main.py` mis à jour pour appeler `urssaf_effectifs.ingest.run()` (et `bmo.ingest.run()` si applicable)
+- [ ] `main.py` mis à jour pour appeler `urssaf_masse_salariale.ingest.run()`, `urssaf_effectifs.ingest.run()` (et `bmo.ingest.run()` si applicable)

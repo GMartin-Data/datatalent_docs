@@ -1,7 +1,7 @@
 # Architecture DataTalent — Diagrammes détaillés
 
 > **Complément à :** `architecture-datatalent.mermaid` (vue monolithique)
-> **Dernière mise à jour :** 2026-03-25
+> **Dernière mise à jour :** 2026-03-27 (D36 annulée — flux d'ingestion uniforme pour toutes les sources)
 
 Trois vues complémentaires. Chacune se lit indépendamment.
 
@@ -9,7 +9,7 @@ Trois vues complémentaires. Chacune se lit indépendamment.
 
 ## 1. Acquisition des données — sources et chemins d'ingestion
 
-Deux chemins distincts selon le volume et la nature de la source.
+Un seul chemin d'ingestion : toutes les sources passent par Cloud Run → GCS → BigQuery raw.
 
 ```mermaid
 graph TD
@@ -21,47 +21,37 @@ graph TD
 
     subgraph compl["Sources complémentaires D35"]
         UE["URSSAF effectifs<br/>API Opendatasoft<br/>filtré 4 codes APE IT"]
-        UM["URSSAF masse salariale<br/>~30 lignes · NA88 = 62"]
+        UM["URSSAF masse salariale<br/>API Opendatasoft<br/>~30 lignes · NA88 = 62"]
         BMO["BMO France Travail<br/>XLSX annuel · FAP M2Z"]
     end
 
-    subgraph script["Chemin script Python"]
+    subgraph pipeline["Pipeline d'ingestion uniforme"]
         CR["Cloud Run Job"]
         GCS["GCS<br/>datatalent-raw/"]
         RAW["BigQuery raw"]
-    end
-
-    subgraph seed["Chemin seed dbt D36"]
-        CSV["dbt/seeds/*.csv<br/>versionné dans Git"]
-        BQSEED["BigQuery seeds"]
     end
 
     FT --> CR
     SI --> CR
     GEO --> CR
     UE --> CR
+    UM --> CR
+    BMO -.->|"conditionnel · spike P2"| CR
     CR --> GCS --> RAW
-
-    UM -->|"curl + nettoyage"| CSV
-    BMO -.->|"si < 1000 lignes"| CSV
-    BMO -.->|"si > 1000 lignes"| CR
-    CSV -->|"dbt seed"| BQSEED
 
     classDef brief fill:#dfe6f0,stroke:#5e81ac,stroke-width:1.5px,color:#2e3440
     classDef compl fill:#e1f5ee,stroke:#0f6e56,stroke-width:1.5px,color:#2e3440
-    classDef script fill:#f5edda,stroke:#c9a95a,stroke-width:1.5px,color:#2e3440
-    classDef seed fill:#eeedfe,stroke:#534ab7,stroke-width:1.5px,color:#2e3440
+    classDef pipeline fill:#f5edda,stroke:#c9a95a,stroke-width:1.5px,color:#2e3440
 
     class FT,SI,GEO brief
     class UE,UM,BMO compl
-    class CR,GCS,RAW script
-    class CSV,BQSEED seed
+    class CR,GCS,RAW pipeline
 ```
 
 **Points clés :**
-- Les 4 sources volumineuses ou nécessitant de la logique (OAuth2, pagination, téléchargement Parquet, API Opendatasoft) passent par Cloud Run → GCS → raw.
-- Les 2 tables de référence à faible volume (< 1000 lignes) court-circuitent l'ingestion : CSV dans le repo Git, `dbt seed` les charge directement dans BigQuery.
-- Le BMO a un chemin conditionnel (pointillés) : le spike déterminera lequel s'applique.
+- Toutes les sources suivent le même chemin : script Python dans `ingestion/{source}/` → `shared/gcs.py` → `shared/bigquery.py` → raw. Pas d'exception.
+- Le BMO a un chemin conditionnel (pointillés) : le spike déterminera si cette source est intégrée.
+- URSSAF masse salariale (~30 lignes) passe par le workflow classique malgré son faible volume, par souci d'uniformité architecturale et d'automatisation homogène.
 
 ---
 
@@ -76,11 +66,7 @@ flowchart LR
         STG_SI["stg_sirene__etablissements<br/>filtre actifs · masquage RGPD"]
         STG_GEO["stg_geo__communes<br/>+ departements + regions"]
         STG_UE["stg_urssaf__effectifs<br/>_commune_ape"]
-    end
-
-    subgraph seeds["Seeds"]
-        SEED_SAL["ref_urssaf_masse<br/>_salariale_na88"]
-        SEED_BMO["ref_bmo_projets<br/>_recrutement_it"]
+        STG_UM["stg_urssaf__masse<br/>_salariale_na88"]
     end
 
     subgraph intermediate["Intermediate — croisements"]
@@ -97,32 +83,30 @@ flowchart LR
     STG_FT -->|"LEFT JOIN<br/>code_commune"| INT_OFF
     STG_GEO -->|"ON communes.code"| INT_OFF
     STG_UE -->|"WHERE APE IT<br/>GROUP BY commune"| INT_DENS
-    SEED_BMO -.->|"WHERE FAP M2Z%<br/>mapping dept"| INT_TENS
 
     INT_OFF --> MART_OFF
     INT_OFF -->|"JOIN code_commune"| MART_CTX
     INT_DENS -->|"JOIN code_commune"| MART_CTX
     INT_TENS -.->|"JOIN code_dept"| MART_CTX
-    SEED_SAL -.->|"JOIN NA88 = 62"| MART_CTX
+    STG_UM -.->|"JOIN NA88 = 62"| MART_CTX
 
     STG_SI ~~~ staging
 
     classDef stg fill:#dfe6f0,stroke:#5e81ac,stroke-width:1px,color:#2e3440
-    classDef seed fill:#eeedfe,stroke:#534ab7,stroke-width:1px,color:#2e3440
     classDef int fill:#f5edda,stroke:#c9a95a,stroke-width:1px,color:#2e3440
     classDef mart fill:#d8ebdd,stroke:#6b9e78,stroke-width:1.5px,color:#2e3440
     classDef dead fill:#e8e8e8,stroke:#888888,stroke-width:1px,color:#2e3440,stroke-dasharray: 5 5
 
-    class STG_FT,STG_GEO,STG_UE stg
+    class STG_FT,STG_GEO,STG_UE,STG_UM stg
     class STG_SI dead
-    class SEED_SAL,SEED_BMO seed
     class INT_OFF,INT_DENS,INT_TENS int
     class MART_OFF,MART_CTX mart
 ```
 
 **Points clés :**
 - `stg_sirene__etablissements` est grisé en pointillés : il est maintenu comme livrable technique mais ne participe à aucune jointure (D14-bis).
-- Les flèches pointillées (BMO, masse salariale) sont conditionnelles — dépendent du spike P2.
+- `stg_urssaf__masse_salariale_na88` est un modèle staging classique (source = raw), plus un seed. Il rejoint directement `mart_contexte_territorial` pour le benchmark salaire.
+- Les flèches pointillées (BMO via `int_tensions_bassin_emploi`, masse salariale) sont conditionnelles — dépendent du spike P2 pour BMO, et de la pertinence du benchmark pour masse salariale.
 - `int_offres_enrichies` est la table pivot : chaque offre France Travail enrichie avec les noms géographiques via API Géo.
 - `mart_contexte_territorial` agrège trois enrichissements contextuels : densité URSSAF, tensions BMO, benchmark salaire URSSAF.
 
@@ -140,12 +124,12 @@ graph TD
 
     subgraph compute["Exécution"]
         CR["Cloud Run Job<br/>Conteneur Docker<br/>python main.py"]
-        DBT["dbt run + dbt test<br/>+ dbt seed"]
+        DBT["dbt run + dbt test"]
     end
 
     subgraph storage["Stockage"]
         GCS["GCS<br/>datatalent-raw/"]
-        BQ["BigQuery<br/>4 datasets + seeds"]
+        BQ["BigQuery<br/>4 datasets"]
     end
 
     subgraph security["Sécurité"]

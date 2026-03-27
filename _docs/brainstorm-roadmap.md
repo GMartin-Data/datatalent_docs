@@ -65,7 +65,7 @@
 - [x] Exploration systématique via MCP `mcp.data.gouv.fr` — 8 sources évaluées
 - [x] **URSSAF effectifs commune × APE (P1)** : dataset `5efd242c72595ba1a48628f2`, API Opendatasoft, NAF5 × commune, depuis 2006 — **retenue, ingérer** (~3-4h)
 - [x] **BMO France Travail (P2)** : dataset `561fa564c751df4f2acdbb48`, XLSX annuel, FAP2021 × bassin d'emploi — **retenue, spike d'abord** (~1h+)
-- [x] **URSSAF masse salariale × NA88 (P3)** : dataset `61d784a161825aaf438b8e9e`, ~30 lignes, NA88=62 — **retenue, seed dbt** (~30 min)
+- [x] **URSSAF masse salariale × NA88 (P3)** : dataset `61d784a161825aaf438b8e9e`, ~30 lignes, NA88=62 — **retenue, ingérer** (workflow classique, ~1h)
 - [x] **BTS INSEE écartée** : NAF agrégé A17 (`J`), granularité insuffisante
 - [x] **APEC écartée** : XLSX "humain" (37 onglets, 1 lisible), données 2021, aucune ventilation fonction
 - [x] **DARES emplois vacants écartée** : indicateur macro par grand secteur, pas de granularité métier
@@ -73,7 +73,7 @@
 - [x] Voir `exploration-mcp-datagouv.md`, `croisement-mcp-x-france-travail.md`
 
 ### B6. Architecture dbt post-exploration ✅
-- [x] Seeds dbt pour tables référentielles < 1000 lignes (D36) — court-circuite raw/GCS
+- [x] ~~Seeds dbt pour tables référentielles < 1000 lignes (D36)~~ — ANNULÉE (2026-03-27), toutes sources en workflow classique d'ingestion
 - [x] Filtrage codes APE IT à l'ingestion URSSAF (D37) — écart assumé avec Medallion
 - [x] 3 tables intermediate : `int_offres_enrichies`, `int_densite_sectorielle_commune`, `int_tensions_bassin_emploi` (conditionnel)
 - [x] 2 marts : `mart_offres`, `mart_contexte_territorial` — remplacent les 3 marts par axe

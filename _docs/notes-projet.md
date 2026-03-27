@@ -1,8 +1,7 @@
 # Notes Projet — Pipeline Data Engineer (Brief DataTalent)
 
 **Créé le :** 2025-03-08
-**Dernière mise à jour :** 2026-03-25 (D35-D37 ajoutées — sources complémentaires data.gouv.fr)
-
+**Dernière mise à jour :** 2026-03-27 (D36 annulée — toutes sources en workflow d'ingestion classique, plus de seeds dbt)
 ---
 
 ## Contexte
@@ -282,7 +281,7 @@ Exploration systématique via le MCP `mcp.data.gouv.fr` — 8 sources évaluées
 |---|---|---|---|---|---|
 | P1 | URSSAF effectifs commune × APE | `5efd242c72595ba1a48628f2` | API Opendatasoft (`open.urssaf.fr`) | **Élevée** — seule source NAF5 × commune, compense l'absence de SIRET (D14-bis) | Ingérer (script Python, ~3-4h) |
 | P2 | BMO France Travail (tensions recrutement) | `561fa564c751df4f2acdbb48` | XLSX téléchargement direct | **Élevée** — tensions recrutement IT par bassin d'emploi | Spike d'abord (~1h), intégration conditionnelle |
-| P3 | URSSAF masse salariale × NA88 | `61d784a161825aaf438b8e9e` | API Opendatasoft | **Moyenne** — salaire brut moyen secteur 62 comme benchmark | Seed dbt (~30 min) |
+| P3 | URSSAF masse salariale × NA88 | `61d784a161825aaf438b8e9e` | API Opendatasoft | **Moyenne** — salaire brut moyen secteur 62 comme benchmark | Ingérer (script Python, workflow classique GCS → BQ raw, ~1h) |
 
 **Sources écartées :**
 - **BTS INSEE (salaires secteur privé)** — NAF agrégé A17 (`J` = tout le secteur Information & Communication). Granularité insuffisante pour un benchmark Data Engineer. Dataset ID `67f85d13377ef83a019ac73f`.
@@ -297,15 +296,12 @@ Exploration systématique via le MCP `mcp.data.gouv.fr` — 8 sources évaluées
 
 **Découverte bonus — NAF 2025 :** la colonne `activitePrincipaleNAF25Etablissement` est déjà diffusée dans Sirene à titre informatif. Transition officielle au 1er janvier 2027. Aucun impact immédiat sur le projet mais bon à savoir.
 
-### D36 — Seeds dbt pour tables référentielles < 1000 lignes
+### D36 — ~~Seeds dbt pour tables référentielles~~ — ANNULÉE (2026-03-27)
 
-- **Principe :** les tables de référence à faible volume (< 1000 lignes) sont chargées via `dbt seed` au lieu du chemin classique (script Python → GCS → BigQuery raw → staging).
-- **Justification :** court-circuite l'ingestion, le CSV est versionné dans Git (auditabilité), `dbt seed` suffit. Compromis assumé avec le pattern Medallion — pas de couche raw pour ces données.
-- **Tables concernées :**
-  - `dbt/seeds/ref_urssaf_masse_salariale_na88.csv` — P3, ~30 lignes
-  - `dbt/seeds/ref_bmo_projets_recrutement_it.csv` — P2, si le spike valide et que le volume filtré M2Z < 1000 lignes
-- **Config :** `dbt/seeds/_seeds.yml` pour le schema (description des colonnes, tests not_null).
-- **Dataset BigQuery cible :** configurable dans `dbt_project.yml` (schéma `seeds` par défaut, ou rediriger vers `staging` si préféré).
+- **Décision initiale :** les tables < 1000 lignes devaient être chargées via `dbt seed` (CSV versionné dans Git, court-circuit du chemin GCS → BQ raw).
+- **Annulation :** toutes les sources suivent désormais le workflow classique d'ingestion (`ingestion/{source}/ingest.py` → `shared/gcs.py` → `shared/bigquery.py` → raw → dbt staging), quelle que soit la volumétrie.
+- **Justification :** uniformité architecturale (un seul flux à comprendre, documenter, automatiser), automatisation homogène via Cloud Run Job (`main.py` appelle chaque `run()`), pas de chemin parallèle à maintenir. Le surcoût d'un script d'ingestion pour ~30 lignes est négligeable face au gain en cohérence.
+- **Conséquence :** pas de répertoire `dbt/seeds/`, pas de `_seeds.yml`. BMO (P2, conditionnel) suit aussi le workflow classique si le spike valide.
 
 ### D37 — URSSAF effectifs : filtrage codes APE IT à l'ingestion
 
