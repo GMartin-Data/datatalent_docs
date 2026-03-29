@@ -535,9 +535,9 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 - [x] Intégration URSSAF masse salariale × NA88 — P3 implémenté (2026-03-28) — voir `ingestion-urssaf-masse-salariale.md`
 - [x] Intégration URSSAF effectifs commune × APE — P1 implémenté (2026-03-28) — voir `ingestion-urssaf-effectifs.md`
 - [x] Spike BMO : granularité FAP2021 vérifiée (2026-03-28) — M2Z n'existe plus, 6 codes IT par préfixe M1X/M2X, pas de distinction data/dev/infra, source validée. Voir `exploration-spike-bmo.md`
-- [ ] Mise à jour `exploration-sources.md` avec sections B5-B7
-- [ ] Mise à jour `structure-repo.md` avec nouveaux dossiers ingestion + dbt
-- [ ] Mise à jour `architecture-datatalent.mermaid` avec sources complémentaires
+- [x] Mise à jour `exploration-sources.md` avec sections B5-B7
+- [x] Mise à jour `structure-repo.md` avec nouveaux dossiers ingestion + dbt
+- [x] Mise à jour `architecture-datatalent.mermaid` avec sources complémentaires
 
 ---
 
