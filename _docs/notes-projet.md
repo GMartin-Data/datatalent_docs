@@ -1,7 +1,8 @@
 # Notes Projet — Pipeline Data Engineer (Brief DataTalent)
 
 **Créé le :** 2025-03-08
-**Dernière mise à jour :** 2026-03-27 (D36 annulée — toutes sources en workflow d'ingestion classique, plus de seeds dbt)
+**Dernière mise à jour :** 2026-03-28 (D38-D40 — endpoint export Opendatasoft, renommage colonnes à l'ingestion, skip conditionnel Sirene ; P1 et P3 implémentés, spike BMO complété)
+
 ---
 
 ## Contexte
@@ -35,7 +36,7 @@
 
 ### D4 — Cloud Run pour l'orchestration
 
-- **Choix :** Cloud Run Job (conteneur Docker) déclenché par Cloud Scheduler
+- **Choix :** Cloud Run **Job** (pas Service)
 - **Justification :** Pas de limite de 9 min (contrairement à Cloud Functions), robuste pour l'ingestion France Travail (101 départements + rate limiting), coût identique (free tier généreux)
 - **Détails :** voir D19
 
@@ -152,6 +153,7 @@
 - **Entrypoint :** `python main.py` — script Python séquentiel orchestrant les 3 ingestions, avec gestion d'erreurs et logging. Pas de FastAPI.
 - **Terraform :** `google_cloud_run_v2_job` + `google_cloud_scheduler_job` (target HTTP vers API Cloud Run Admin `/run`)
 - **Argument soutenance :** "Job parce que c'est du batch, pas un service HTTP."
+- **Write disposition :** `WRITE_APPEND` pour France Travail (accumulation hebdomadaire, déduplication ROW_NUMBER en staging par `id` + `_ingestion_date DESC`), `WRITE_TRUNCATE` pour toutes les autres sources (données statiques ou annuelles, écrasement idempotent). Paramètre `write_disposition` optionnel dans `shared/bigquery.py` avec défaut `WRITE_TRUNCATE`.
 
 ### D20 — Conteneurisation et gestion de dépendances
 
@@ -271,6 +273,10 @@
 - **Production (Cloud Run) :** pas de `.env`. Credentials FT via Secret Manager, auth GCP via SA `sa-ingestion`.
 - **Fichiers versionnés :** `.env.example` (template), `profiles.yml` avec `env_var()`. `.env` et `.envrc` dans `.gitignore`.
 
+### D30 à D34 — Cadrage Terraform import
+
+Voir `cadrage-terraform-import.md` pour les décisions D30 (structure modulaire), D31 (import incrémental), D32 (IAM `google_project_iam_member`), D33 (Secret Manager conteneur only), D34 (modules Bloc 2-3 à la demande).
+
 ### D35 — Sources complémentaires data.gouv.fr (exploration MCP 2026-03-25)
 
 Exploration systématique via le MCP `mcp.data.gouv.fr` — 8 sources évaluées, 3 retenues. Voir `exploration-mcp-datagouv.md` pour les fiches détaillées, `croisement-mcp-x-france-travail.md` pour les impacts croisés avec les findings France Travail.
@@ -314,6 +320,30 @@ Exploration systématique via le MCP `mcp.data.gouv.fr` — 8 sources évaluées
 - **Justification :** réduire le volume de ~95% à l'ingestion. Le dataset complet couvre tous les secteurs NAF × toutes les communes × toutes les années depuis 2006. Seuls les 4 codes APE IT sont pertinents pour le projet.
 - **Conséquence :** le filtrage IT est fait à l'ingestion (pas en staging). La table raw `urssaf_effectifs_commune_ape` ne contient que les données IT. C'est un écart assumé avec le pattern Medallion (raw = brut intégral) — justifié par la réduction de volume et le fait que les autres secteurs n'ont aucune utilité pour le projet, même potentielle.
 - **Table intermediate :** `int_densite_sectorielle_commune` agrège les 4 codes APE en un seul total IT par commune × année. Voir `couche-intermediate-datatalent.md`.
+
+### D38 — URSSAF effectifs : endpoint export au lieu de pagination records
+
+- **Contexte :** lors de l'implémentation de P1 (URSSAF effectifs commune × APE), la pagination `limit`/`offset` sur l'endpoint `/records` échoue en 400 Bad Request à `offset=10000` — limite hard imposée par Opendatasoft, indépendante du filtre appliqué.
+- **Décision :** utiliser l'endpoint `/exports/json` qui retourne le dataset filtré complet en une seule requête, sans limite de pagination.
+- **Conséquence :** `client.py` simplifié — plus de boucle de pagination, une seule requête GET avec `timeout=120s`. La réponse est une liste JSON directe (pas d'enveloppe `total_count`/`results`).
+- **Applicable à :** toute source Opendatasoft dont le volume filtré dépasse 10 000 lignes. Pour P3 (masse salariale, ~27 lignes), l'endpoint `/records` reste utilisable sans problème.
+
+### D39 — Renommage sémantique des colonnes à l'ingestion (écart Medallion)
+
+- **Principe :** les scripts d'ingestion des sources complémentaires (P1, P2, P3) renomment les colonnes en snake_case sémantique (ex: `met` → `projets_recrutement`, `Dept` → `code_departement`) avant écriture JSONL, au lieu de conserver les noms source bruts dans raw et renommer en staging dbt.
+- **Justification technique :** BigQuery autodetect rejette ou mutile les noms avec espaces et accents (ex: `Code métier BMO`, `Libellé de famille de métier`). Un renommage minimal est obligatoire pour que le load job fonctionne. Le renommage sémantique est fait dans la foulée car l'ingestion touche déjà chaque champ (cast types, gestion nulls, filtrage).
+- **Conséquence sur dbt staging :** les modèles staging des sources complémentaires sont réduits à un rôle de validation (tests `not_null`, `unique`, `accepted_values`) et de colonnes calculées (ex: `part_difficile_pct` pour BMO). Pas de renommage ni de cast en staging — c'est fait en amont.
+- **Écart avec Medallion pur :** en Medallion strict, raw = copie fidèle de la source, staging = renommage + typage. Ici, raw est déjà nettoyé. Compromis assumé — documenté, cohérent sur les 3 sources complémentaires.
+- **Sources primaires non concernées :** France Travail, Sirene et API Géo stockent le JSON brut complet en raw (D8/D11/D13). L'écart ne concerne que P1, P2, P3.
+
+### D40 — Sirene : skip conditionnel dans `run()` (optimisation coût/temps)
+
+- **Contexte :** Sirene (~2-3 Go Parquet, ~40M lignes) pèse 99% du temps d'exécution de `main.py` pour 0% de valeur analytique dans les marts (jointure SIRET morte, D14-bis). La source n'est mise à jour que mensuellement (D12), mais `main.py` est exécuté chaque semaine (D19).
+- **Décision :** `sirene/ingest.py` vérifie la date du dernier fichier GCS (`sirene/` prefix). Si un fichier existe depuis moins de 30 jours, skip avec log `sirene_skip_recent`. Sinon, exécution normale.
+- **Justification :** évite 3 re-téléchargements inutiles par mois (chacun = 2-3 Go download + upload GCS + load BQ 40M lignes). Le check GCS coûte 1 appel API (négligeable). Pas de changement d'architecture (pas de deuxième Cloud Run Job).
+- **Alternative écartée :** Cloud Run Job séparé avec Scheduler mensuel — complexité disproportionnée (nouveau job, nouveau scheduler, Terraform, CI/CD) pour le même résultat fonctionnel.
+- **Fallback :** si le check GCS échoue (erreur réseau, permissions), l'ingestion se fait normalement — pire cas, on recharge pour rien.
+- **Implémentation :** ~10 lignes dans `sirene/ingest.py`, utilise `google.cloud.storage` (déjà en dépendance).
 
 ---
 
@@ -461,6 +491,24 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 - Enrichissement obtenu via API Géo : nom commune, nom département, nom région, population
 - Enrichissement complémentaire via URSSAF (D35) : densité d'établissements IT et effectifs salariés par commune
 
+### URSSAF effectifs commune × APE (P1 — implémenté 2026-03-28)
+
+- Format wide confirmé : colonnes `effectifs_salaries_{YYYY}` et `nombre_d_etablissements_{YYYY}` de 2006 à 2024
+- Unpivot Python (regex sur noms de colonnes) → format long (95 283 lignes après unpivot)
+- Limite hard offset=10000 sur `/records` → endpoint `/exports/json` retenu (D38)
+- **Paris : codes arrondissements (75101–75120), pas code commune centrale (75056)** — à gérer dans `int_densite_sectorielle_commune` en Bloc 2
+- Spot check 2024 : 97 806 effectifs IT sur Paris arrondissements
+- Voir `ingestion-urssaf-effectifs.md`
+
+### URSSAF masse salariale × NA88 (P3 — implémenté 2026-03-28)
+
+- 27 lignes (une par année 1998–2024), une seule page suffisante
+- Champ filtré : `secteur_na88i` (pas `na88`), format `"62 Programmation, conseil..."` — split sur premier espace
+- Champ masse salariale : `masse_salariale` (pas `masse_salariale_brute`)
+- `annee` retourné comme string par l'API — casté en int à l'ingestion
+- Spot check 2024 : salaire moyen = 55 070 € ✓
+- Voir `ingestion-urssaf-masse-salariale.md`
+
 ---
 
 ## Stratégie personnelle
@@ -484,8 +532,9 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 - [x] Taux de présence SIRET dans les offres (voir D14-bis — 0%, jointure morte)
 - [x] Sources complémentaires data.gouv.fr (voir D35 — URSSAF effectifs, BMO, masse salariale)
 - [x] Adzuna comme source complémentaire (évaluée et écartée, voir D35)
-- [ ] Spike BMO : vérifier granularité FAP2021 sous M2Z (distingue data vs dev vs infra ?)
-- [ ] Intégration URSSAF effectifs commune × APE (script ingestion + staging + intermediate)
+- [x] Intégration URSSAF masse salariale × NA88 — P3 implémenté (2026-03-28) — voir `ingestion-urssaf-masse-salariale.md`
+- [x] Intégration URSSAF effectifs commune × APE — P1 implémenté (2026-03-28) — voir `ingestion-urssaf-effectifs.md`
+- [x] Spike BMO : granularité FAP2021 vérifiée (2026-03-28) — M2Z n'existe plus, 6 codes IT par préfixe M1X/M2X, pas de distinction data/dev/infra, source validée. Voir `exploration-spike-bmo.md`
 - [ ] Mise à jour `exploration-sources.md` avec sections B5-B7
 - [ ] Mise à jour `structure-repo.md` avec nouveaux dossiers ingestion + dbt
 - [ ] Mise à jour `architecture-datatalent.mermaid` avec sources complémentaires
