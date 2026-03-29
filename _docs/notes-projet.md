@@ -1,14 +1,14 @@
 # Notes Projet — Pipeline Data Engineer (Brief DataTalent)
 
 **Créé le :** 2025-03-08
-**Dernière mise à jour :** 2026-03-09 (D26 ajoutée)
-
+**Dernière mise à jour :** 2026-03-27 (D36 annulée — toutes sources en workflow d'ingestion classique, plus de seeds dbt)
 ---
 
 ## Contexte
 
 - **Brief :** Pipeline end-to-end cloud pour analyser le marché de l'emploi Data Engineer en France
-- **Sources :** API France Travail (OAuth2), Stock Sirene INSEE (Parquet, multi-Go), API Géo (libre)
+- **Sources brief :** API France Travail (OAuth2), Stock Sirene INSEE (Parquet, multi-Go), API Géo (libre)
+- **Sources complémentaires (D35) :** URSSAF effectifs commune × APE, BMO France Travail, URSSAF masse salariale × NA88
 - **Équipe :** 4 personnes (2 en présentiel, 2 en distanciel), 3 × 5 jours espacés de 3 semaines
 - **Évaluation :** Démo technique (70%) + Revue code/architecture (30%)
 
@@ -84,7 +84,8 @@
 
 - Le package PyPI `api-offres-emploi` date de 2020, non maintenu → coder directement (~50 lignes)
 - Helper `get_token()` avec cache + renouvellement avant expiration (token ~25 min)
-- Rate limiting : `time.sleep(0.35)` entre requêtes (limite API = 3 req/s → 1 req/333ms, 350ms = marge de sécurité)
+- **Rate limiting (mis à jour 2026-03-17) :** limite réelle = **10 req/s** (constatée sur le portail francetravail.io, application DataTalent-Greg). L'ancienne valeur de 3 req/s provenait d'une documentation obsolète.
+- **Throttle préventif :** `time.sleep(0.15)` entre requêtes (~6.6 req/s, conservateur). Remplace le `sleep(0.35)` initial qui était basé sur la limite de 3 req/s.
 - Retry exponentiel via `tenacity` : en cas d'échec (429, 500, 503), réessayer après 1s → 2s → 4s → 8s → abandon
 
 ### D11 — Stock Sirene : chargement complet (pas de pré-filtrage)
@@ -270,6 +271,50 @@
 - **Production (Cloud Run) :** pas de `.env`. Credentials FT via Secret Manager, auth GCP via SA `sa-ingestion`.
 - **Fichiers versionnés :** `.env.example` (template), `profiles.yml` avec `env_var()`. `.env` et `.envrc` dans `.gitignore`.
 
+### D35 — Sources complémentaires data.gouv.fr (exploration MCP 2026-03-25)
+
+Exploration systématique via le MCP `mcp.data.gouv.fr` — 8 sources évaluées, 3 retenues. Voir `exploration-mcp-datagouv.md` pour les fiches détaillées, `croisement-mcp-x-france-travail.md` pour les impacts croisés avec les findings France Travail.
+
+**Sources retenues :**
+
+| Priorité | Source | Dataset ID | Accès | Valeur | Action |
+|---|---|---|---|---|---|
+| P1 | URSSAF effectifs commune × APE | `5efd242c72595ba1a48628f2` | API Opendatasoft (`open.urssaf.fr`) | **Élevée** — seule source NAF5 × commune, compense l'absence de SIRET (D14-bis) | Ingérer (script Python, ~3-4h) |
+| P2 | BMO France Travail (tensions recrutement) | `561fa564c751df4f2acdbb48` | XLSX téléchargement direct | **Élevée** — tensions recrutement IT par bassin d'emploi | Spike d'abord (~1h), intégration conditionnelle |
+| P3 | URSSAF masse salariale × NA88 | `61d784a161825aaf438b8e9e` | API Opendatasoft | **Moyenne** — salaire brut moyen secteur 62 comme benchmark | Ingérer (script Python, workflow classique GCS → BQ raw, ~1h) |
+
+**Sources écartées :**
+- **BTS INSEE (salaires secteur privé)** — NAF agrégé A17 (`J` = tout le secteur Information & Communication). Granularité insuffisante pour un benchmark Data Engineer. Dataset ID `67f85d13377ef83a019ac73f`.
+- **APEC (rémunération cadres)** — Données non structurées sur data.gouv.fr (XLSX "humain", 37 onglets, 1 seul lisible via Tabular API). Édition 2022, données 2021. Aucune ventilation par fonction visible.
+- **DARES (emplois vacants)** — Indicateur macro par grand secteur, pas de granularité métier.
+- **Adzuna** — Évaluée et écartée : scope creep hors brief (4ème source non mandatée), déduplication avec France Travail irrésoluble (pas de clé commune), salaires estimés par ML (mélange méthodologique), double pipeline staging pour gain marginal.
+
+**APIs projet confirmées via `search_dataservices` (aucun changement d'URL) :**
+- France Travail Offres : `https://francetravail.io/produits-partages/catalogue/offres-emploi`
+- Recherche Entreprises : `https://recherche-entreprises.api.gouv.fr`
+- API Géo : `https://geo.api.gouv.fr`
+
+**Découverte bonus — NAF 2025 :** la colonne `activitePrincipaleNAF25Etablissement` est déjà diffusée dans Sirene à titre informatif. Transition officielle au 1er janvier 2027. Aucun impact immédiat sur le projet mais bon à savoir.
+
+### D36 — ~~Seeds dbt pour tables référentielles~~ — ANNULÉE (2026-03-27)
+
+- **Décision initiale :** les tables < 1000 lignes devaient être chargées via `dbt seed` (CSV versionné dans Git, court-circuit du chemin GCS → BQ raw).
+- **Annulation :** toutes les sources suivent désormais le workflow classique d'ingestion (`ingestion/{source}/ingest.py` → `shared/gcs.py` → `shared/bigquery.py` → raw → dbt staging), quelle que soit la volumétrie.
+- **Justification :** uniformité architecturale (un seul flux à comprendre, documenter, automatiser), automatisation homogène via Cloud Run Job (`main.py` appelle chaque `run()`), pas de chemin parallèle à maintenir. Le surcoût d'un script d'ingestion pour ~30 lignes est négligeable face au gain en cohérence.
+- **Conséquence :** pas de répertoire `dbt/seeds/`, pas de `_seeds.yml`. BMO (P2, conditionnel) suit aussi le workflow classique si le spike valide.
+
+### D37 — URSSAF effectifs : filtrage codes APE IT à l'ingestion
+
+- **Principe :** on ne télécharge pas l'intégralité du dataset URSSAF (toutes communes × tous secteurs) — on filtre à la source via les paramètres API Opendatasoft.
+- **Codes APE retenus :**
+  - `62.01Z` — Programmation informatique
+  - `62.02A` — Conseil en systèmes et logiciels informatiques
+  - `62.03Z` — Gestion d'installations informatiques
+  - `62.09Z` — Autres activités informatiques
+- **Justification :** réduire le volume de ~95% à l'ingestion. Le dataset complet couvre tous les secteurs NAF × toutes les communes × toutes les années depuis 2006. Seuls les 4 codes APE IT sont pertinents pour le projet.
+- **Conséquence :** le filtrage IT est fait à l'ingestion (pas en staging). La table raw `urssaf_effectifs_commune_ape` ne contient que les données IT. C'est un écart assumé avec le pattern Medallion (raw = brut intégral) — justifié par la réduction de volume et le fait que les autres secteurs n'ont aucune utilité pour le projet, même potentielle.
+- **Table intermediate :** `int_densite_sectorielle_commune` agrège les 4 codes APE en un seul total IT par commune × année. Voir `couche-intermediate-datatalent.md`.
+
 ---
 
 ## Mapping des 3 blocs
@@ -301,7 +346,7 @@
 |------|----------|------|
 | J1 | Kickoff (30 min), modèles dbt staging | **Kickoff + daily** |
 | J2 | Modèles dbt staging (fin) + tests | **Daily 10 min** |
-| J3 | Modèle intermediate (jointure offres ↔ Sirene) | **Daily 10 min** |
+| J3 | Modèles intermediate (enrichissement géo API Géo, densité sectorielle URSSAF) | **Daily 10 min** |
 | J4 | Modèles marts (agrégats géo, secteur, temporel) | **Daily 10 min** |
 | J5 | Modules Terraform, doc de transition | **Daily 10 min** |
 
@@ -329,7 +374,7 @@
 ### Risques et tampons
 
 - **Risque Bloc 1 :** France Travail résiste → J5 = tampon ingestion
-- **Risque Bloc 2 :** Jointure SIRET faible taux → besoin d'un plan B en intermediate
+- **Risque Bloc 2 :** ~~Jointure SIRET faible taux~~ Résolu par D14-bis (SIRET absent, enrichissement via codeNAF offre + URSSAF). Nouveau risque : intégration URSSAF effectifs (API Opendatasoft à découvrir) + spike BMO (granularité FAP incertaine)
 - **Risque Bloc 3 :** IaC déborde → sacrifier le catalogue de données (bonus dans le brief)
 - **Risque transverse :** Perte de contexte après pause → mitigé par doc de transition + kickoff synchrone (D25)
 
@@ -378,25 +423,28 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 
 ### API France Travail
 
-- OAuth2 client_credentials + pagination `range` (plafond 1150/combinaison) + rate limit 3 req/s
-- 4 codes ROME retenus, filtrage mots-clés en staging (D8)
-- SIRET rarement présent (~20-40%) → impact jointure Sirene
-- Salaire = texte libre, souvent absent → parsing regex en staging
+- OAuth2 client_credentials + pagination `range` (plafond 1150/combinaison) + rate limit 10 req/s (D10, mis à jour)
+- 4 codes ROME retenus, classification `categorie_metier` par regex sur titre en staging (D8-bis) — 20 offres data sur 2589 IT
+- **SIRET absent de 100% des offres** — jointure Sirene morte (D14-bis)
+- `codeNAF` présent dans 47.8% des offres, biaisé intérim (38.3% = codes 78.10Z/78.20Z)
+- Salaire : `salaire.libelle` présent à 29.6%, 100% parsable mécaniquement (6 patterns regex). `salaire.commentaire` = texte libre, parsing non recommandé
 
 ### Stock Sirene
 
 - StockEtablissement Parquet (~40M lignes, ~2-3 Go) + StockUniteLegale (~25M lignes, ~1 Go)
-- Chargement complet des deux fichiers dans BigQuery raw (D11), filtrage `etatAdministratifEtablissement = 'A'` en staging, jointure SIREN entre les deux en intermediate
+- Chargement complet des deux fichiers dans BigQuery raw (D11), filtrage `etatAdministratifEtablissement = 'A'` en staging
+- **Rôle actuel :** livrable technique (démonstration dbt sur source volumineuse) + référentiel NAF. Aucune jointure en intermediate — la jointure SIRET est morte (D14-bis), l'enrichissement sectoriel vient de `codeNAF` dans l'offre France Travail et des données URSSAF (D35)
 - Pas de filtrage NAF dans Sirene — enrichissement seulement
 - RGPD : `statutDiffusionEtablissement = 'P'` → adresse masquée, à gérer en staging
 - Refresh mensuel automatisé prévu pour Bloc 3 (D12)
 
-### Jointure offres ↔ Sirene
+### Jointure offres ↔ Sirene — D14-bis (caduque)
 
-- LEFT JOIN sur SIRET (D14), pas INNER JOIN — ne pas perdre les offres sans SIRET
-- Taux de matching estimé : 20-40%
-- Pré-traitement staging : normaliser SIRET (strip espaces, vérifier longueur 14, cast string)
-- Plan B (matching nom) reporté à Bloc 3, décision après mesure du taux réel
+- **Constat exploration (2026-03-24) :** `entreprise.siret` absent de 100% des 2589 offres collectées. Le champ n'existe pas dans le JSON — ni dans `entreprise`, ni à la racine, ni sous un autre nom.
+- **D14 (ancien) :** LEFT JOIN sur SIRET, taux estimé 20-40%, plan B matching par nom en Bloc 3.
+- **D14-bis (nouveau) :** jointure SIRET abandonnée (0% de match). Matching par nom reporté sine die (effort disproportionné : noms d'intérimaires dominants, casse incohérente, ambiguïtés).
+- **Enrichissement sectoriel :** repose sur `codeNAF` et `secteurActiviteLibelle` présents directement dans l'offre (47.8%), complété par URSSAF effectifs commune × APE (D35/D37) comme contexte géo-sectoriel.
+- **Sirene reste ingéré** — livrable brief, staging dbt sur source volumineuse, mais aucune jointure dans le modèle intermediate.
 
 ### API Géo
 
@@ -406,9 +454,12 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 
 ### Enrichissement géographique
 
-- Jointure primaire : code commune INSEE (offres → communes API Géo) — D15
-- Fallback : code département extrait de `lieuTravail.libelle`
-- Fiabilité haute : quasi toutes les offres ont une localisation
+- Jointure primaire : `lieuTravail.commune` → `communes.code` (API Géo) — **92.7% couverture** (D15, confirmé Axe 3)
+- Fallback : code département extrait de `lieuTravail.libelle` par regex — **100% couverture**
+- Validation croisée : 100% concordance entre les deux sources sur les 2399 offres où les deux sont présentes (zéro discordance)
+- Lat/lon disponibles à 89.3% — cartographie faisable directement
+- Enrichissement obtenu via API Géo : nom commune, nom département, nom région, population
+- Enrichissement complémentaire via URSSAF (D35) : densité d'établissements IT et effectifs salariés par commune
 
 ---
 
@@ -424,13 +475,24 @@ Doc : https://docs.anthropic.com/en/docs/claude-code/github-app
 
 ## Points à explorer
 
-- [x] Mapping codes ROME pour Data Engineer (voir D8)
+- [x] Mapping codes ROME pour Data Engineer (voir D8, révisé D8-bis — 20 offres data sur 2589 IT)
 - [x] Stratégie filtrage Sirene (voir D11, pas de filtrage NAF — enrichissement seulement)
 - [x] Architecture GCP détaillée (quels services exactement)
 - [x] Mapping phases brief → 3 blocs de 5 jours
 - [x] Découpage tâches pour travail en équipe de 4 (voir D23, D24, D25)
 - [x] Structure repo GitHub (voir D16, D17)
+- [x] Taux de présence SIRET dans les offres (voir D14-bis — 0%, jointure morte)
+- [x] Sources complémentaires data.gouv.fr (voir D35 — URSSAF effectifs, BMO, masse salariale)
+- [x] Adzuna comme source complémentaire (évaluée et écartée, voir D35)
+- [ ] Spike BMO : vérifier granularité FAP2021 sous M2Z (distingue data vs dev vs infra ?)
+- [ ] Intégration URSSAF effectifs commune × APE (script ingestion + staging + intermediate)
+- [ ] Mise à jour `exploration-sources.md` avec sections B5-B7
+- [ ] Mise à jour `structure-repo.md` avec nouveaux dossiers ingestion + dbt
+- [ ] Mise à jour `architecture-datatalent.mermaid` avec sources complémentaires
 
 ---
 
 *Détails d'exploration des sources (B1-B4) : voir `exploration-sources.md`.*
+*Sources complémentaires data.gouv.fr (B5-B7) : voir `exploration-mcp-datagouv.md`.*
+*Croisement des findings : voir `croisement-mcp-x-france-travail.md`.*
+*Construction couche intermediate : voir `couche-intermediate-datatalent.md`.*
